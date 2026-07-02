@@ -93,6 +93,12 @@ services:
       - SESSION_DATA_PATH=/app/data/sessions
       - PUPPETEER_HEADLESS=${PUPPETEER_HEADLESS:-true}
       - PUPPETEER_ARGS=${PUPPETEER_ARGS:---no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu}
+      # Bound a single CDP call so a stuck Chromium op fails fast instead of wedging the worker.
+      # Empty = Puppeteer default (unchanged). Set in .env (e.g. 120000) to enable.
+      - PUPPETEER_PROTOCOL_TIMEOUT_MS=${PUPPETEER_PROTOCOL_TIMEOUT_MS:-}
+      # Skip downloading inbound WhatsApp media larger than this many bytes (metadata-only delivery).
+      # Empty = download everything (unchanged). Set in .env (e.g. 5242880 = 5 MB) to protect Chromium.
+      - INBOUND_MEDIA_MAX_BYTES=${INBOUND_MEDIA_MAX_BYTES:-}
       # Pin the WhatsApp Web version if a session hangs at "authenticating" after scanning the QR
       # (whatsapp-web.js 1.34.x can stall on an incompatible auto-selected WA-Web version, #251/#273).
       # Empty = auto-select (default). Set WWEBJS_WEB_VERSION in .env to a known-good version — see
