@@ -7,6 +7,7 @@ import { DataSource } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { WebhookService } from './webhook.service';
 import { Webhook } from './entities/webhook.entity';
+import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
 import { Session, SessionStatus } from '../session/entities/session.entity';
 
 describe('WebhookService session-scoped access', () => {
@@ -19,14 +20,15 @@ describe('WebhookService session-scoped access', () => {
     ds = new DataSource({
       type: 'sqlite',
       database: ':memory:',
-      entities: [Session, Webhook],
+      entities: [Session, Webhook, WebhookDeliveryFailure],
       synchronize: true,
     });
     await ds.initialize();
     const repo = ds.getRepository(Webhook);
+    const failuresRepo = ds.getRepository(WebhookDeliveryFailure);
     const cfg = { get: () => false }; // queue.enabled = false
     // 2nd arg is the delivery-failure repo, unused by the scoped read/update/delete paths under test.
-    service = new WebhookService(repo, {} as never, cfg as never, {} as never, undefined);
+    service = new WebhookService(repo, failuresRepo, cfg as never, {} as never, undefined);
 
     const sessions = ds.getRepository(Session);
     for (const id of ['sessA', 'sessB']) {

@@ -6,6 +6,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import * as crypto from 'crypto';
 import { Webhook } from './entities/webhook.entity';
+import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
 import { CreateWebhookDto, UpdateWebhookDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
 import { QUEUE_NAMES } from '../queue/queue-names';
@@ -78,6 +79,8 @@ export class WebhookService {
   constructor(
     @InjectRepository(Webhook, 'data')
     private readonly webhookRepository: Repository<Webhook>,
+    @InjectRepository(WebhookDeliveryFailure, 'data')
+    private readonly webhookDeliveryFailureRepository: Repository<WebhookDeliveryFailure>,
     private readonly configService: ConfigService,
     private readonly hookManager: HookManager,
     @Optional()
@@ -85,6 +88,15 @@ export class WebhookService {
     private readonly webhookQueue?: Queue<WebhookJobData>,
   ) {
     this.queueEnabled = configService.get<boolean>('queue.enabled', false);
+  }
+
+  private normalizePaging(paging?: { limit?: number; offset?: number }): { limit: number; offset: number } {
+    const limitRaw = paging?.limit;
+    const offsetRaw = paging?.offset;
+    // Defaults match controller/tool docs: 1000 max, default 1000, offset default 0.
+    const limit = Number.isInteger(limitRaw) ? Math.min(Math.max(limitRaw as number, 1), 1000) : 1000;
+    const offset = Number.isInteger(offsetRaw) ? Math.max(offsetRaw as number, 0) : 0;
+    return { limit, offset };
   }
 
   /**
@@ -125,22 +137,42 @@ export class WebhookService {
     });
   }
 
-  async findAll(): Promise<Webhook[]> {
-    return this.webhookRepository.find({
-      order: { createdAt: 'DESC' },
-    });
+  /**
+   * List webhooks visible to the calling API key. When allowedSessions is set (non-null + non-empty),
+   * results are restricted to those session ids. A null/empty allowlist means "unrestricted".
+   */
+  async findAll(
+    allowedSessions?: string[] | null,
+    paging?: { limit?: number; offset?: number },
+  ): Promise<Webhook[]> {
+    const { limit, offset } = this.normalizePaging(paging);
+
+    const qb = this.webhookRepository
+      .createQueryBuilder('w')
+      .orderBy('w.createdAt', 'DESC')
+      .take(limit)
+      .skip(offset);
+
+    if (Array.isArray(allowedSessions) && allowedSessions.length > 0) {
+      qb.andWhere('w.sessionId IN (:...allowedSessions)', { allowedSessions });
+    }
+
+    return qb.getMany();
   }
 
-  async findOne(id: string): Promise<Webhook> {
-    const webhook = await this.webhookRepository.findOne({ where: { id } });
+  /**
+   * Session-scoped by-id lookup. Prevents a session-restricted key from reading another session's webhook.
+   */
+  async findOne(sessionId: string, id: string): Promise<Webhook> {
+    const webhook = await this.webhookRepository.findOne({ where: { id, sessionId } });
     if (!webhook) {
       throw new NotFoundException(`Webhook with id '${id}' not found`);
     }
     return webhook;
   }
 
-  async update(id: string, dto: UpdateWebhookDto): Promise<Webhook> {
-    const webhook = await this.findOne(id);
+  async update(sessionId: string, id: string, dto: UpdateWebhookDto): Promise<Webhook> {
+    const webhook = await this.findOne(sessionId, id);
 
     if (dto.url !== undefined) {
       await this.validateWebhookUrl(dto.url);
@@ -157,13 +189,13 @@ export class WebhookService {
     return this.webhookRepository.save(webhook);
   }
 
-  async delete(id: string): Promise<void> {
-    const webhook = await this.findOne(id);
+  async delete(sessionId: string, id: string): Promise<void> {
+    const webhook = await this.findOne(sessionId, id);
     await this.webhookRepository.remove(webhook);
   }
 
   async test(sessionId: string, webhookId: string): Promise<{ success: boolean; statusCode?: number; error?: string }> {
-    const webhook = await this.findOne(webhookId);
+    const webhook = await this.findOne(sessionId, webhookId);
 
     const testPayload: WebhookPayload = {
       event: 'test',
@@ -468,5 +500,25 @@ export class WebhookService {
 
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async listDeliveryFailures(paging?: {
+    sessionId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<WebhookDeliveryFailure[]> {
+    const { limit, offset } = this.normalizePaging(paging);
+
+    const qb = this.webhookDeliveryFailureRepository
+      .createQueryBuilder('f')
+      .orderBy('f.createdAt', 'DESC')
+      .take(limit)
+      .skip(offset);
+
+    if (paging?.sessionId) {
+      qb.andWhere('f.sessionId = :sessionId', { sessionId: paging.sessionId });
+    }
+
+    return qb.getMany();
   }
 }
