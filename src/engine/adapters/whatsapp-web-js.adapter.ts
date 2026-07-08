@@ -403,6 +403,9 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           handleSIGINT: false,
           handleSIGTERM: false,
           handleSIGHUP: false,
+          // Bound CDP round-trips so a wedged Chromium worker fails fast instead of hanging the
+          // session. Unset falls back to Puppeteer's default (no behavior change).
+          protocolTimeout: Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS) || undefined,
           // Only override the executable when explicitly configured; otherwise let
           // whatsapp-web.js fall back to Puppeteer's bundled Chromium.
           ...(this.config.puppeteer?.executablePath ? { executablePath: this.config.puppeteer.executablePath } : {}),

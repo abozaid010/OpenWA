@@ -111,14 +111,6 @@ export interface IncomingMessage {
     /** Decoded byte size of the media; always set when `omitted` is true. */
     sizeBytes?: number;
   };
-  /**
-   * True when inbound media was intentionally NOT downloaded because it exceeded
-   * `INBOUND_MEDIA_MAX_BYTES`. The message is still delivered (metadata only) so consumers
-   * keep visibility; `media.data` is absent and nothing is written to the DB/webhook as base64.
-   */
-  skippedMedia?: boolean;
-  /** Size (bytes) reported by WhatsApp before download; present for skipped or downloaded media. */
-  mediaSizeBytes?: number;
   quotedMessage?: {
     id: string;
     body: string;
