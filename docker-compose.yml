@@ -37,7 +37,7 @@ services:
       - openwa-network
     ports:
       - '127.0.0.1:${DASHBOARD_PORT:-2886}:80'
-      - '127.0.0.1:8080:8080' # Traefik dashboard
+      - '127.0.0.1:8085:8080' # Traefik dashboard
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
@@ -75,11 +75,11 @@ services:
       - FOWNER
       - SETGID # gosu: drop to the openwa group
       - SETUID # gosu: drop to the openwa user
-    read_only: true
+#    read_only: true
     tmpfs:
       - /tmp
-    pids_limit: 512
-    mem_limit: ${OPENWA_MEM_LIMIT:-2g} # tune up for many concurrent sessions
+    pids_limit: 2048
+    mem_limit: 5g # tune up for many concurrent sessions
     ports:
       - '127.0.0.1:${API_PORT:-2785}:2785'
     expose:
@@ -111,6 +111,10 @@ services:
       - SESSION_DATA_PATH=/app/data/sessions
       - PUPPETEER_HEADLESS=${PUPPETEER_HEADLESS:-true}
       - PUPPETEER_ARGS=${PUPPETEER_ARGS:---no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu}
+      # Bound stuck Chromium CDP calls (env-gated stability patch)
+      - PUPPETEER_PROTOCOL_TIMEOUT_MS=${PUPPETEER_PROTOCOL_TIMEOUT_MS:-}
+      # Skip downloading oversized inbound WhatsApp media
+      - INBOUND_MEDIA_MAX_BYTES=${INBOUND_MEDIA_MAX_BYTES:-}
       # Pin the WhatsApp Web version if a session hangs at "authenticating" after scanning the QR
       # (whatsapp-web.js 1.34.x can stall on an incompatible auto-selected WA-Web version, #251/#273).
       # Empty = auto-select (default). Set WWEBJS_WEB_VERSION in .env to a known-good version — see
@@ -142,6 +146,12 @@ services:
       - API_MASTER_KEY=${API_MASTER_KEY:-}
       # Docker socket proxy (openwa-api never touches /var/run/docker.sock directly)
       - DOCKER_HOST=tcp://docker-proxy:2375
+      - AUTO_START_SESSIONS=true
+
+      - NODE_OPTIONS=--max-old-space-size=768
+      - SIMULATE_TYPING=${SIMULATE_TYPING:-true}
+      - SIMULATE_TYPING_MAX_MS=${SIMULATE_TYPING_MAX_MS:-1000}
+
     volumes:
       - openwa-data:/app/data
       - ./docker-compose.yml:/app/docker-compose.yml:ro

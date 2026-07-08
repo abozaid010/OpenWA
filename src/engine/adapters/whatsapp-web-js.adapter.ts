@@ -200,6 +200,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         puppeteer: {
           headless: this.config.puppeteer?.headless ?? true,
           args: puppeteerArgs,
+          // Bound how long a single CDP call may hang before it rejects, so a stuck Chromium
+          // op (typing/presence, send, download) fails fast instead of wedging the worker and
+          // cascading into ProtocolError. Only applied when PUPPETEER_PROTOCOL_TIMEOUT_MS is set.
+          ...(Number.isInteger(Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10)) &&
+          Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10) > 0
+            ? { protocolTimeout: Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10) }
+            : {}),
           // Only override the executable when explicitly configured; otherwise let
           // whatsapp-web.js fall back to Puppeteer's bundled Chromium.
           ...(this.config.puppeteer?.executablePath ? { executablePath: this.config.puppeteer.executablePath } : {}),
@@ -280,19 +287,36 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           };
         }
 
-        // Handle media
+        // Handle media. When INBOUND_MEDIA_MAX_BYTES is set, skip the download for any file
+        // larger than the limit *before* calling downloadMedia() — a big inbound file never
+        // spins up a Chromium download, which is the root cause of ProtocolError/RAM spikes,
+        // base64 DB bloat, and 413s (with their retries) on webhook delivery. The message is
+        // still delivered as metadata-only (skippedMedia:true). Unset env = original behaviour.
         if (msg.hasMedia) {
-          try {
-            const media = await msg.downloadMedia();
-            if (media) {
-              incomingMessage.media = {
-                mimetype: media.mimetype,
-                filename: media.filename || undefined,
-                data: media.data,
-              };
+          const maxRaw = Number.parseInt(process.env.INBOUND_MEDIA_MAX_BYTES ?? '', 10);
+          const maxBytes = Number.isInteger(maxRaw) && maxRaw > 0 ? maxRaw : Number.POSITIVE_INFINITY;
+          const sizeBytes = (msg as unknown as { _data?: { size?: number } })._data?.size ?? 0;
+
+          if (sizeBytes > maxBytes) {
+            incomingMessage.skippedMedia = true;
+            incomingMessage.mediaSizeBytes = sizeBytes;
+            this.logger.warn(
+              `Skipping oversized inbound media (${sizeBytes} bytes > ${maxBytes} limit) for message ${msg.id?._serialized ?? '<unknown>'}; not downloaded, not stored, not forwarded as bytes`,
+            );
+          } else {
+            try {
+              const media = await msg.downloadMedia();
+              if (media) {
+                incomingMessage.media = {
+                  mimetype: media.mimetype,
+                  filename: media.filename || undefined,
+                  data: media.data,
+                };
+                if (sizeBytes > 0) incomingMessage.mediaSizeBytes = sizeBytes;
+              }
+            } catch (error) {
+              this.logger.error('Error downloading media', String(error));
             }
-          } catch (error) {
-            this.logger.error('Error downloading media', String(error));
           }
         }
 

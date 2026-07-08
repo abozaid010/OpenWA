@@ -57,6 +57,8 @@ export interface IncomingMessage {
   isStatusBroadcast?: boolean;
   /** For group messages, the WID of the participant who actually sent it (`from` is the group JID there). */
   author?: string;
+  /** WIDs @mentioned in the message (empty/absent when none). Surfaced for command targeting. */
+  mentionedIds?: string[];
   /**
    * Set by the adapter when the sender is identified by a privacy id (e.g. a WhatsApp `@lid`) rather
    * than a phone number, so engine-neutral code can decide whether to attempt phone resolution without
@@ -79,6 +81,14 @@ export interface IncomingMessage {
     filename?: string;
     data?: string; // base64
   };
+  /**
+   * True when inbound media was intentionally NOT downloaded because it exceeded
+   * `INBOUND_MEDIA_MAX_BYTES`. The message is still delivered (metadata only) so consumers
+   * keep visibility; `media.data` is absent and nothing is written to the DB/webhook as base64.
+   */
+  skippedMedia?: boolean;
+  /** Size (bytes) reported by WhatsApp before download; present for skipped or downloaded media. */
+  mediaSizeBytes?: number;
   quotedMessage?: {
     id: string;
     body: string;
