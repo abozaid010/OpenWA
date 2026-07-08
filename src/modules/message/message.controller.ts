@@ -2,12 +2,13 @@ import { Controller, Post, Get, Param, Body, Query, HttpCode, HttpStatus } from 
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { MessageService } from './message.service';
 import { BulkMessageService } from './bulk-message.service';
-import { SendTextMessageDto, SendMediaMessageDto, MessageResponseDto } from './dto';
+import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
 import { SendTemplateMessageDto } from './dto/send-template.dto';
 import { SendBulkMessageDto, BulkMessageResponseDto } from './dto/bulk-message.dto';
 import {
   SendLocationDto,
   SendContactDto,
+  SendPollDto,
   ReplyMessageDto,
   ForwardMessageDto,
   ReactMessageDto,
@@ -28,6 +29,11 @@ export class MessageController {
   @ApiOperation({ summary: 'Get message history for a session' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiQuery({ name: 'chatId', required: false, description: 'Filter by chat ID' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'Filter by sender. A phone also matches messages from a lid that resolves to it.',
+  })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max messages to return (default 50)' })
   @ApiQuery({ name: 'offset', required: false, type: Number, description: 'Offset for pagination' })
   @ApiResponse({
@@ -37,11 +43,13 @@ export class MessageController {
   async getMessages(
     @Param('sessionId') sessionId: string,
     @Query('chatId') chatId?: string,
+    @Query('from') from?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
     return this.messageService.getMessages(sessionId, {
       chatId,
+      from,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
     });
@@ -141,7 +149,7 @@ export class MessageController {
   })
   async sendAudio(
     @Param('sessionId') sessionId: string,
-    @Body() dto: SendMediaMessageDto,
+    @Body() dto: SendAudioMessageDto,
   ): Promise<MessageResponseDto> {
     return this.messageService.sendAudio(sessionId, dto);
   }
@@ -210,6 +218,19 @@ export class MessageController {
     return this.messageService.sendSticker(sessionId, dto);
   }
 
+  @Post('send-poll')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @ApiOperation({ summary: 'Send a native WhatsApp poll' })
+  @ApiParam({ name: 'sessionId', description: 'Session ID' })
+  @ApiResponse({
+    status: 201,
+    description: 'Poll sent',
+    type: MessageResponseDto,
+  })
+  async sendPoll(@Param('sessionId') sessionId: string, @Body() dto: SendPollDto): Promise<MessageResponseDto> {
+    return this.messageService.sendPoll(sessionId, dto);
+  }
+
   @Post('reply')
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Reply to a message' })
@@ -272,21 +293,32 @@ export class MessageController {
     type: Boolean,
     description: 'When true, downloads media (base64) for messages that have it. Slower; default false.',
   })
+  @ApiQuery({
+    name: 'deep',
+    required: false,
+    type: Boolean,
+    description:
+      'When true, raises the limit ceiling from 100 to 2000 for reaching further back in history ' +
+      '(whatsapp-web.js only; loads earlier messages on demand). Forces metadata-only (includeMedia ' +
+      'is ignored). Large/slow requests may increase WhatsApp rate-limiting risk; default false.',
+  })
   @ApiResponse({ status: 200, description: 'Chat history (most recent messages)' })
   async getChatHistory(
     @Param('sessionId') sessionId: string,
     @Param('chatId') chatId: string,
     @Query('limit') limit?: string,
     @Query('includeMedia') includeMedia?: string,
+    @Query('deep') deep?: string,
   ) {
     // Parse the limit defensively: a non-numeric query value (?limit=abc) yields NaN,
-    // so fall back to undefined and let the service apply its default + [1,100] clamp.
+    // so fall back to undefined and let the service apply its default + clamp.
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
     return this.messageService.getChatHistory(
       sessionId,
       chatId,
       parsedLimit !== undefined && !Number.isNaN(parsedLimit) ? parsedLimit : undefined,
       includeMedia === 'true' || includeMedia === '1',
+      deep === 'true' || deep === '1',
     );
   }
 

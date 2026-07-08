@@ -1,4 +1,10 @@
 {
+  "toast": {
+    "connectionLost": {
+      "title": "Server Connection Lost",
+      "message": "The backend server is unreachable. Please check if the server is running."
+    }
+  },
   "common": {
     "appName": "OpenWA",
     "appSubtitle": "WhatsApp API",
@@ -47,13 +53,17 @@
     "logout": "Logout",
     "refresh": "Refresh",
     "errorGeneric": "An error occurred",
-    "unknownError": "Unknown error"
+    "unknownError": "Unknown error",
+    "retry": "Retry"
   },
   "theme": {
     "light": "Light",
     "dark": "Dark",
     "system": "System",
-    "label": "Theme: {{value}}"
+    "label": "Theme: {{value}}",
+    "appearance": "Appearance",
+    "mode": "Mode",
+    "palette": "Palette"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -68,6 +78,15 @@
     "logs": "Logs"
   },
   "chats": {
+    "media": {
+      "location": "Location",
+      "call": "Call",
+      "callMissed": "Missed call",
+      "callVideo": "Video call",
+      "callVideoMissed": "Missed video call",
+      "omitted": "Media",
+      "image": "Image"
+    },
     "subtitle": "Send and reply to WhatsApp messages in real time",
     "noSessionsTitle": "No connected sessions",
     "noSessionsDesc": "Please connect a WhatsApp session from the <1>Sessions</1> menu first to use the chat feature.",
@@ -96,9 +115,10 @@
     "noPermission": "You do not have permission to send messages",
     "send": "Send",
     "placeholderTitle": "Start messaging",
-    "placeholderDesc": "Select an active chat from the left sidebar to start reading and sending WhatsApp messages.",
+    "placeholderDesc": "Choose a conversation to read and reply.",
     "deleteConfirm": "Delete this message for everyone?",
     "messageDeleted": "🚫 This message was deleted",
+    "messageMasked": "🔒 Masked by WhatsApp for linked devices — check your primary phone",
     "errors": {
       "loadSessions": "Failed to load sessions",
       "loadChats": "Failed to load chats",
@@ -107,7 +127,8 @@
       "send": "Failed to send message",
       "react": "Failed to react to message",
       "delete": "Failed to delete message"
-    }
+    },
+    "loadMessagesError": "Couldn't load messages. Check the server logs."
   },
   "errorBoundary": {
     "title": "Something went wrong",
@@ -134,7 +155,8 @@
       "activeSessions": "Active Sessions",
       "messagesToday": "Messages Today",
       "webhooksConfigured": "Webhooks Configured",
-      "apiCalls": "API Calls (24h)"
+      "apiCalls": "API Calls (24h)",
+      "totalMessages": "Total Messages"
     },
     "sessionsOverview": "Sessions Overview",
     "showingSessions": "Showing {{shown}} of {{total}} sessions",
@@ -149,7 +171,23 @@
     "view": "View",
     "disconnect": "Disconnect",
     "errorPrefix": "Error: {{message}}",
-    "loadError": "Failed to load data"
+    "loadError": "Failed to load data",
+    "charts": {
+      "title": "Message Analytics",
+      "period": {
+        "24h": "24h",
+        "7d": "7d",
+        "30d": "30d"
+      },
+      "overTime": "Messages over time",
+      "byType": "Messages by type",
+      "topChats": "Top chats",
+      "sent": "Sent",
+      "received": "Received",
+      "messages": "Messages",
+      "empty": "No message activity in this period.",
+      "error": "Couldn't load message analytics. Check the server logs."
+    }
   },
   "sessionStatus": {
     "created": "New",
@@ -226,7 +264,8 @@
       "start": "Start",
       "stop": "Stop",
       "reconnect": "Reconnect",
-      "delete": "Delete"
+      "delete": "Delete",
+      "killStuck": "Kill Stuck"
     },
     "toasts": {
       "readyTitle": "Session Ready",
@@ -241,6 +280,34 @@
       "sessionId": "Session ID",
       "lastActive": "Last Active",
       "error": "Error"
+    },
+    "forceKill": {
+      "title": "Kill Stuck Session",
+      "message": "Are you sure you want to force-kill session \"{{name}}\"?",
+      "warning": "This will forcefully terminate the WhatsApp browser process. The session may need to be re-scanned on restart.",
+      "confirm": "Kill Session",
+      "successTitle": "Session Killed",
+      "success": "Session has been force-killed. You can restart it now.",
+      "failedTitle": "Force-Kill Failed",
+      "failed": "Failed to force-kill the session."
+    },
+    "pairing": {
+      "tabQr": "QR Code",
+      "tabPhone": "Link with Phone Number",
+      "phoneLabel": "Phone Number",
+      "phonePlaceholder": "e.g., 919876543210",
+      "phoneHint": "Digits only (no +, spaces, or dashes) in international format (country code + number).",
+      "invalidPhone": "Enter a valid phone number: 6–15 digits, country code first, no symbols.",
+      "generateButton": "Generate Pairing Code",
+      "generating": "Generating pairing code...",
+      "codeLabel": "Your Pairing Code",
+      "changeNumber": "Change Number / Request New Code",
+      "instructions": "Pairing Instructions",
+      "step1": "<strong>1.</strong> Open WhatsApp on your phone",
+      "step2": "<strong>2.</strong> Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong>",
+      "step3": "<strong>3.</strong> Tap <strong>Link a Device</strong>, then tap <strong>Link with phone number instead</strong>",
+      "step4": "<strong>4.</strong> Enter the 8-character code shown above on your phone",
+      "waitingConnection": "Waiting for your phone to link…"
     }
   },
   "webhooks": {
@@ -256,6 +323,36 @@
     "events": "Events",
     "available": "Available Events",
     "saveChanges": "Save Changes",
+    "filters": {
+      "title": "Filters (optional)",
+      "hint": "Only fire when all conditions match. Applies to message events.",
+      "badge": "{{count}} filter",
+      "badge_other": "{{count}} filters",
+      "addCondition": "Add condition",
+      "removeCondition": "Remove condition",
+      "caseSensitive": "Case sensitive",
+      "contactPlaceholder": "Number or WhatsApp ID...",
+      "textPlaceholder": "Text to match...",
+      "addValue": "Add \"{{value}}\"",
+      "yes": "Yes",
+      "no": "No",
+      "fields": {
+        "sender": "Sender",
+        "recipient": "Recipient",
+        "body": "Message body",
+        "type": "Message type",
+        "isGroup": "Is group chat",
+        "fromMe": "Sent by me",
+        "hasMedia": "Has media",
+        "mentions": "Mentions"
+      },
+      "operators": {
+        "is": "is",
+        "isNot": "is not",
+        "contains": "contains",
+        "equals": "equals"
+      }
+    },
     "columns": {
       "url": "URL",
       "events": "Events",
@@ -493,6 +590,8 @@
       "useBuiltIn": "Use Built-in PostgreSQL Container",
       "builtInDesc": "OpenWA will manage a PostgreSQL container for you",
       "dbName": "Database Name",
+      "schema": "Schema",
+      "schemaDesc": "PostgreSQL schema (ignored for SQLite). Default 'public'. The schema must already exist.",
       "poolSize": "Pool Size",
       "ssl": "SSL Connection",
       "sslDesc": "Enable TLS/SSL for secure database connections",
@@ -501,6 +600,24 @@
       "migrationsTitle": "Database Migrations",
       "migrationsStatus": "Schema is auto-synchronized with TypeORM",
       "migrationsHint": "Migrations are managed automatically. Use CLI for manual migrations."
+    },
+    "engine": {
+      "title": "WhatsApp Engine",
+      "subtitle": "Choose and configure the WhatsApp connection engine.",
+      "builtIn": "Built-in",
+      "headless": "Headless Mode",
+      "headlessDesc": "Run the browser without a visible UI (recommended for production).",
+      "sessionDataPath": "Session Data Path",
+      "browserArgs": "Browser Arguments",
+      "noBrowser": "This engine connects over WebSocket — it has no browser, so there are no headless or browser-argument settings. The active engine is applied after a restart.",
+      "restartNote": "Switching the engine takes effect after a server restart.",
+      "webVersion": "WhatsApp Web build",
+      "webVersionNative": "auto (whatsapp-web.js default)",
+      "webVersionSource": {
+        "pinned": "pinned via WWEBJS_WEB_VERSION",
+        "auto": "auto-resolved, current known-good build",
+        "native": "whatsapp-web.js native auto-select"
+      }
     },
     "redis": {
       "title": "Redis",
@@ -511,19 +628,20 @@
       "queueTitle": "Enable BullMQ Queue System",
       "queueDesc": "Use message queues for reliable message and webhook delivery",
       "statsTitle": "Queue Statistics",
-      "messageQueue": "Message Queue",
       "webhookQueue": "Webhook Queue",
       "pending": "Pending",
       "completed": "Completed",
       "failed": "Failed",
-      "clearFailed": "Clear Failed Jobs",
       "viewBullMq": "View Bull MQ Dashboard",
       "disabledTitle": "Redis is Disabled",
       "disabledDesc": "Enable Redis for caching, session storage, and BullMQ message queues.",
-      "passwordOptional": "(optional)"
+      "passwordOptional": "(optional)",
+      "bullMqUrlCopied": "Bull MQ dashboard URL copied",
+      "bullMqUrlHint": "Open it with an ADMIN API key — a browser tab can't authenticate."
     },
     "storage": {
       "title": "Storage Configuration",
+      "s3Unreachable": "S3 (unreachable)",
       "local": "Local Filesystem",
       "localDesc": "Store media files locally",
       "s3": "Amazon S3",
@@ -543,12 +661,29 @@
       "disconnected": "Disconnected",
       "disabled": "Disabled"
     },
+    "envPinNote": "Pinned by an environment variable — this is the running value; dashboard changes won't apply until that variable is unset.",
+    "migration": {
+      "title": "Heads up — this changes the data backend",
+      "dbWarning": "The new database starts empty. Download a backup of your current data now (while still on the old database), then restore it after the restart.",
+      "storageWarning": "Existing media files are not moved to the new storage backend automatically; they'll remain in the old location.",
+      "downloadBackup": "Download backup first",
+      "backupTitle": "Data backup & restore",
+      "backupHint": "Export all data as JSON before switching databases, then import it after the switch. The backup contains webhook secrets and proxy credentials in plaintext — store it securely and delete it after restoring.",
+      "export": "Export data",
+      "import": "Import data",
+      "exportFailed": "Couldn't export data",
+      "importFailed": "Couldn't import data",
+      "importOk": "Data imported",
+      "importConfirm": "Importing will REPLACE all current data with the backup ({{rows}} rows). This cannot be undone. Continue?",
+      "invalidFile": "That file isn't a valid OpenWA data backup.",
+      "importTooLarge": "Backup is too large for the request limit. Increase BODY_SIZE_LIMIT on the server and try again."
+    },
     "restart": {
-      "idleTitle": "⚙️ Configuration Saved",
-      "restartingTitle": "🔄 Restarting Server...",
-      "waitingTitle": "⏳ Please Wait...",
-      "successTitle": "✅ Server Ready",
-      "errorTitle": "❌ Restart Failed",
+      "idleTitle": "Configuration saved",
+      "restartingTitle": "Restarting server…",
+      "waitingTitle": "Please wait…",
+      "successTitle": "Server ready",
+      "errorTitle": "Restart failed",
       "idleDesc": "Configuration has been saved to <code>.env.generated</code>.<br/>A server restart is required to apply the changes.",
       "later": "Restart Later",
       "now": "Restart Now",
@@ -561,11 +696,12 @@
     },
     "toasts": {
       "saveFailed": "Save Failed"
-    }
+    },
+    "statusLoadError": "Couldn't load the current infrastructure status. Refresh to try again."
   },
   "plugins": {
     "title": "Plugins",
-    "subtitle": "Manage engines, storage backends, and extensions",
+    "subtitle": "Install, configure, and manage extensions",
     "refresh": "Refresh",
     "engineCard": "Active WhatsApp Engine",
     "running": "Running",
@@ -579,9 +715,14 @@
     "disable": "Disable",
     "healthCheck": "Health Check",
     "configure": "Configure",
+    "available": "Available",
+    "install": "Install plugin",
+    "uninstall": "Uninstall",
+    "uninstallConfirm": "Uninstall \"{{name}}\"? This deletes its files.",
+    "engineSwitchHint": "To switch the active engine, set ENGINE_TYPE in the environment and restart the server",
     "empty": {
-      "title": "No Plugins Found",
-      "description": "Install plugins to extend OpenWA functionality"
+      "title": "No plugins installed",
+      "description": "Install a plugin to extend what OpenWA can do."
     },
     "config": {
       "title": "Configure {{name}}",
@@ -592,7 +733,23 @@
       "sessionDataPath": "Session Data Path",
       "browserArgs": "Browser Arguments",
       "noOptions": "No configuration options available for this plugin",
-      "save": "Save Configuration"
+      "save": "Save Configuration",
+      "addItem": "Add",
+      "tabConfig": "Configuration",
+      "tabSessions": "Sessions"
+    },
+    "rail": {
+      "engine": "Active engine",
+      "enabled": "enabled",
+      "installed": "installed",
+      "active": "Active plugins",
+      "none": "None enabled yet"
+    },
+    "installModal": {
+      "title": "Install a plugin",
+      "hint": "Upload a plugin packaged as a .zip (with a manifest.json). It runs sandboxed once enabled.",
+      "choose": "Choose a .zip file…",
+      "tooLarge": "The file exceeds the 5 MB limit."
     },
     "toasts": {
       "errorTitle": "Plugin Error",
@@ -602,7 +759,83 @@
       "healthError": "Health Check Error",
       "savedTitle": "Configuration Saved",
       "savedDesc": "Server restart required to apply changes.",
-      "saveFailed": "Save Failed"
+      "saveFailed": "Save Failed",
+      "installed": "Plugin installed",
+      "installFailed": "Install failed",
+      "uninstalled": "Plugin uninstalled",
+      "uninstallFailed": "Uninstall failed"
+    },
+    "sessions": {
+      "activationTitle": "Run for",
+      "activationDesc": "Choose which sessions this plugin runs for.",
+      "allSessions": "All sessions",
+      "specificSessions": "Specific sessions",
+      "noSessions": "No sessions yet.",
+      "saveActivation": "Save activation",
+      "perSessionTitle": "Per-session config",
+      "perSessionDesc": "Override the global config for a session; untouched fields inherit the global value.",
+      "selectSession": "Select a session…",
+      "saveOverride": "Save override",
+      "clearOverride": "Clear override"
+    },
+    "instances": {
+      "title": "Instances",
+      "description": "Provision per-account instances for this integration. Each instance has its own signing secret and ingress URL.",
+      "create": "Create instance",
+      "empty": "No instances yet. Create one to get an ingress URL and secret.",
+      "loadError": "Failed to load instances.",
+      "allSessions": "All sessions",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "form": {
+        "instanceId": "Instance ID",
+        "instanceIdPlaceholder": "e.g. acme-support",
+        "instanceIdHint": "Letters, numbers, hyphens, underscores (max 64).",
+        "sessionScope": "Session scope (optional)",
+        "sessionScopePlaceholder": "Leave blank for all sessions",
+        "verifyToken": "Verify token (optional)",
+        "verifyTokenPlaceholder": "Token the provider echoes on verification",
+        "config": "Config (optional JSON)",
+        "configPlaceholder": "{ }"
+      },
+      "created": {
+        "title": "Instance created",
+        "hint": "Copy the secret now — it is shown only once.",
+        "secret": "Signing secret",
+        "ingressUrls": "Ingress URL(s)"
+      },
+      "regenerate": {
+        "title": "Regenerate secret",
+        "confirm": "Regenerate the signing secret for {{id}}? The current secret stops working immediately.",
+        "action": "Regenerate"
+      },
+      "edit": { "title": "Edit {{id}}" },
+      "delete": {
+        "title": "Delete instance",
+        "confirm": "Delete instance {{id}}? Its ingress URL and secret stop working immediately.",
+        "action": "Delete"
+      },
+      "actions": {
+        "regenerate": "Regenerate secret",
+        "edit": "Edit",
+        "delete": "Delete",
+        "copy": "Copy",
+        "save": "Save",
+        "enable": "Enable",
+        "disable": "Disable"
+      },
+      "errors": {
+        "invalidId": "Instance ID must be letters, numbers, hyphens or underscores (max 64).",
+        "invalidJson": "Config must be valid JSON.",
+        "duplicateId": "An instance with that ID already exists."
+      },
+      "toasts": {
+        "created": "Instance created",
+        "updated": "Instance updated",
+        "deleted": "Instance deleted",
+        "secretRegenerated": "Secret regenerated",
+        "actionFailed": "Action failed"
+      }
     }
   }
 }

@@ -156,7 +156,9 @@ curl -s 'http://localhost:2785/api/infra/storage/files/count' \
 # Step 2: Export all files as tar.gz
 curl -s 'http://localhost:2785/api/infra/storage/export' \
   -H 'X-API-Key: YOUR_KEY'
-# Response: { "message": "Storage export completed", "download": "/app/data/storage-export-xxx.tar.gz" }
+# Response: { "message": "Storage export completed", "download": "/app/data/exports/storage-export-xxx.tar.gz" }
+# The archive is auto-removed after STORAGE_EXPORT_TTL_MS (default 1h), so re-import it before then.
+# It is written under data/ so it survives the restart in Step 4 and stays import-able.
 
 # Step 3: Change storage configuration
 # From: STORAGE_TYPE=local
@@ -170,7 +172,7 @@ docker compose up -d
 curl -X POST 'http://localhost:2785/api/infra/storage/import' \
   -H 'X-API-Key: YOUR_KEY' \
   -H 'Content-Type: application/json' \
-  -d '{"filePath": "/app/data/storage-export-xxx.tar.gz"}'
+  -d '{"filePath": "/app/data/exports/storage-export-xxx.tar.gz"}'
 ```
 
 | Scenario                     | Support | Method                   |
@@ -192,6 +194,7 @@ REDIS_ENABLED=true
 REDIS_BUILTIN=false      # false = external Redis
 REDIS_HOST=your-redis-host.com
 REDIS_PORT=6379
+REDIS_USERNAME=optional
 REDIS_PASSWORD=optional
 ```
 
@@ -750,7 +753,7 @@ docker run --rm \
   -v $(pwd)/data:/app/data \
   -e DATABASE_URL=sqlite:///app/data/openwa.db \
   ghcr.io/rmyndharis/openwa:0.2.0 \
-  npm run migration:run:prod   # the prod image strips ts-node/TS source — use :prod (M13)
+  npm run migration:run:prod   # the prod image strips ts-node/TS source — use :prod
 
 # 4. Migrate configuration
 echo "⚙️ Migrating configuration..."

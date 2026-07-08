@@ -1,7 +1,8 @@
 import { EventEmitter } from 'events';
-import { Client, LocalAuth, MessageMedia, MessageTypes } from 'whatsapp-web.js';
+import { Client, LocalAuth, MessageMedia, MessageTypes, WAState, type Message } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode';
 import * as path from 'path';
+import * as fs from 'fs';
 import {
   IWhatsAppEngine,
   EngineStatus,
@@ -14,13 +15,14 @@ import {
   GroupInfo,
   GroupParticipant,
   LocationInput,
+  PollInput,
   ContactCard,
   MessageReaction,
   Label,
   Channel,
   ChannelMessage,
   Status,
-  TextStatusOptions,
+  StatusPostOptions,
   StatusResult,
   Catalog,
   Product,
@@ -32,9 +34,16 @@ import {
   RevokedMessage,
   ReactionEvent,
 } from '../interfaces/whatsapp-engine.interface';
+import { resolveWebVersionPin } from '../wa-web-version';
+import { isChannelJid, userPart } from '../identity/wa-id';
+import { LidMappingStore } from '../identity/lid-mapping-store.service';
+import { ChatLabelsUnsupportedError } from '../../common/errors/chat-labels-unsupported.error';
 import { createLogger } from '../../common/services/logger.service';
 import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error';
-import { assertSafeFetchUrl } from '../../common/security/ssrf-guard';
+import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
+import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
+import { ChannelNotFoundError } from '../../common/errors/channel-not-found.error';
+import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import {
   GroupChat,
   GroupMetadataRaw,
@@ -43,17 +52,18 @@ import {
   WwjsChannelData,
   GroupCreateResult,
 } from '../types/whatsapp-web-js.types';
-import { buildIncomingMessageBase } from './message-mapper';
-
-/** Default cap on a server-side media download: 50 MiB (overridable via MEDIA_DOWNLOAD_MAX_BYTES). */
-const DEFAULT_MEDIA_MAX_BYTES = 50 * 1024 * 1024;
-/** Default timeout for a server-side media download: 30s (overridable via MEDIA_DOWNLOAD_TIMEOUT_MS). */
-const DEFAULT_MEDIA_TIMEOUT_MS = 30_000;
-
-function positiveIntFromEnv(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
+import { buildIncomingMessageBase, mapContactFields } from './message-mapper';
+import { buildVCard } from './vcard';
+import {
+  capInboundMedia,
+  coerceDeclaredSize,
+  inboundMediaConcurrency,
+  inboundMediaMaxBytes,
+  inboundMediaTimeoutMs,
+  isMediaDownloadEnabled,
+  withInboundDownloadTimeout,
+} from './inbound-media-cap';
+import { ConcurrencyLimiter } from './concurrency-limiter';
 
 /**
  * Map a whatsapp-web.js MessageAck integer to the neutral DeliveryStatus.
@@ -69,6 +79,70 @@ export function wwebjsAckToDeliveryStatus(ack: number): DeliveryStatus {
 }
 
 /**
+ * Extract call detail from a whatsapp-web.js `call_log` message, or `undefined` for any other type.
+ * The public Message wrapper doesn't expose call fields, so we read them off the raw `_data`. An
+ * incoming call (`!fromMe`) with no recorded `callDuration` was never answered → missed; an outgoing
+ * call is never "missed". Used by getChatHistory, where `call_log` entries actually appear.
+ */
+export function extractWwebjsCall(msg: Message): { video: boolean; missed: boolean } | undefined {
+  if ((msg.type as string) !== 'call_log') return undefined;
+  const d = (msg as unknown as { _data?: { isVideoCall?: boolean; callDuration?: number } })._data ?? {};
+  return { video: Boolean(d.isVideoCall), missed: !msg.fromMe && !d.callDuration };
+}
+
+/**
+ * Whether a per-session proxy URL parses to a supported scheme — defense-in-depth for a stored proxy
+ * that bypassed DTO validation (e.g. loaded from the DB on restart). The host is NOT SSRF-blocked: a
+ * per-session proxy is operator-chosen egress, and a loopback proxy sidecar is a legitimate setup.
+ */
+export function isSupportedProxyUrl(url: string): boolean {
+  try {
+    return ['http:', 'https:', 'socks4:', 'socks5:'].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+export interface ProxyLaunchConfig {
+  /** Credential-less `--proxy-server` value — Chromium ignores credentials embedded in this flag. */
+  serverArg: string;
+  /** Username/password for whatsapp-web.js's `proxyAuthentication` (→ `page.authenticate`, HTTP/HTTPS only). */
+  proxyAuthentication?: { username: string; password: string };
+  /** The URL carries credentials for a SOCKS proxy, which Chromium cannot authenticate at all. */
+  socksAuthUnsupported: boolean;
+}
+
+/**
+ * Split a proxy URL into a credential-less `--proxy-server` value plus, for an HTTP/HTTPS proxy, the
+ * username/password to hand to whatsapp-web.js's `proxyAuthentication` (which calls `page.authenticate`
+ * — the only way Chromium authenticates a proxy). Credentials embedded in `--proxy-server` are ignored
+ * by Chromium, and SOCKS proxies cannot be authenticated at all, so SOCKS credentials are surfaced via
+ * `socksAuthUnsupported` for the caller to warn about instead of failing with an opaque nav timeout (#628).
+ * Call only with a URL that already passed {@link isSupportedProxyUrl}.
+ */
+export function buildProxyLaunchConfig(url: string): ProxyLaunchConfig {
+  const parsed = new URL(url);
+  const serverArg = `${parsed.protocol}//${parsed.host}`;
+  const username = decodeURIComponent(parsed.username);
+  const password = decodeURIComponent(parsed.password);
+  const hasCredentials = username !== '' || password !== '';
+  const isSocks = parsed.protocol === 'socks4:' || parsed.protocol === 'socks5:';
+  if (hasCredentials && !isSocks) {
+    return { serverArg, proxyAuthentication: { username, password }, socksAuthUnsupported: false };
+  }
+  return { serverArg, socksAuthUnsupported: hasCredentials && isSocks };
+}
+
+/**
+ * Whether a MediaInput's string `data` is an http(s) URL (to be fetched through the SSRF-guarded
+ * loadRemoteMedia) rather than base64. Case-insensitive, matching the Baileys adapter — a mixed-case
+ * scheme like `HTTPS://` must still route through the guarded fetch, not be treated as base64.
+ */
+export function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+/**
  * Fetch remote media for sending, with an SSRF host guard, a byte cap, and a timeout.
  * The guard runs BEFORE any network call, so an internal/reserved URL throws `SsrfBlockedError`
  * and no outbound socket is opened. The byte cap (node-fetch `size`) and `AbortSignal` timeout
@@ -76,16 +150,13 @@ export function wwebjsAckToDeliveryStatus(ack: number): DeliveryStatus {
  * existing MIME-detection behavior.
  */
 export async function loadRemoteMedia(url: string): Promise<MessageMedia> {
-  await assertSafeFetchUrl(url);
-  return MessageMedia.fromUrl(url, {
-    reqOptions: {
-      size: positiveIntFromEnv('MEDIA_DOWNLOAD_MAX_BYTES', DEFAULT_MEDIA_MAX_BYTES),
-      signal: AbortSignal.timeout(positiveIntFromEnv('MEDIA_DOWNLOAD_TIMEOUT_MS', DEFAULT_MEDIA_TIMEOUT_MS)),
-      // Never follow redirects: the SSRF guard only validated the original host, so a
-      // followed 3xx could reach an internal target. node-fetch rejects on redirect.
-      redirect: 'error',
-    },
-  });
+  // Fetch through the SSRF-pinned path: it validates the host, pins the connection to the vetted IP
+  // (so a DNS rebind can't redirect it to an internal target between check and connect), caps bytes,
+  // and refuses redirects. We then build the MessageMedia from the returned bytes — NOT via
+  // MessageMedia.fromUrl, whose bundled node-fetch performs its own unpinned DNS re-resolution.
+  const { data, mimetype } = await loadRemoteMediaBuffer(url);
+  const filename = new URL(url).pathname.split('/').pop() || undefined;
+  return new MessageMedia(mimetype || 'application/octet-stream', data.toString('base64'), filename);
 }
 
 export interface WhatsAppWebJsConfig {
@@ -101,30 +172,34 @@ export interface WhatsAppWebJsConfig {
     url: string;
     type: 'http' | 'https' | 'socks4' | 'socks5';
   };
+  // Shared lid<->phone table. Threaded in so the wwjs engine can persist the `phone -> lid` pairs it
+  // learns while resolving sends, letting the message read-path bridge `@c.us`/`@lid` rows (#583 R3).
+  lidMappingStore?: LidMappingStore;
 }
 
+const READY_RECONCILE_INTERVAL_MS = 2000;
+const READY_RECONCILE_TIMEOUT_MS = 90_000;
+
+// WhatsApp Web version resolution (the #488 auto-resolve) lives in a dependency-free module so infra
+// status can import it without loading whatsapp-web.js (engine lazy-loading). The adapter imports
+// resolveWebVersionPin above for use in initialize().
+
 /**
- * Optional pin for the WhatsApp Web client version. whatsapp-web.js 1.34.x can get stuck at
- * "authenticating" (the post-link sync never completes) when the auto-fetched WA-Web version is
- * incompatible (#251). Set WWEBJS_WEB_VERSION to a known-good version string (browse
- * https://github.com/wppconnect-team/wa-version) to pin it; WWEBJS_WEB_VERSION_REMOTE_PATH
- * overrides the URL template (use `{version}` as the placeholder) if you self-host the HTML.
- * Unset (or `latest`/`off`) keeps whatsapp-web.js's default auto-version behavior.
+ * Optional override for whatsapp-web.js's initial boot/inject wait (#353). On slow first boots
+ * (e.g. WSL2 or low-resource containers) the default 30s `authTimeoutMs` can expire before WhatsApp
+ * Web finishes loading, aborting QR generation. Set WWEBJS_AUTH_TIMEOUT_MS to a larger value in
+ * milliseconds (e.g. 120000) to extend it. Unset, or a value that is not a positive safe integer,
+ * keeps the whatsapp-web.js default (30000ms).
  */
-export function resolveWebVersionPin():
-  | { webVersion: string; webVersionCache: { type: 'remote'; remotePath: string } }
-  | undefined {
-  const version = process.env.WWEBJS_WEB_VERSION?.trim();
-  if (!version || version.toLowerCase() === 'off' || version.toLowerCase() === 'latest') {
+export function resolveAuthTimeoutMs(): number | undefined {
+  const raw = process.env.WWEBJS_AUTH_TIMEOUT_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) {
     return undefined;
   }
-  const template =
-    process.env.WWEBJS_WEB_VERSION_REMOTE_PATH?.trim() ||
-    'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html';
-  return {
-    webVersion: version,
-    webVersionCache: { type: 'remote', remotePath: template.replace('{version}', version) },
-  };
+  const ms = Number(raw);
+  // Number.isSafeInteger rejects Infinity (from huge digit strings) and >2^53 unsafe integers — both
+  // pass the /^\d+$/ shape check but would make whatsapp-web.js's inject loop wait effectively forever.
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
 
 /**
@@ -147,6 +222,15 @@ export function extractLinkedParentJID(groupMetadata?: GroupMetadataRaw): string
   return candidate._serialized ?? null;
 }
 
+/**
+ * True when a send error is whatsapp-web.js's "recipient needs a LID we don't have" failure, raised
+ * when sending to a `@c.us` for a contact WhatsApp has migrated to `@lid`.
+ * ponytail: matched on the wwjs error text — there is no structured code; revisit if wwjs changes it.
+ */
+export function isNoLidForUserError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('No LID for user');
+}
+
 export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngine {
   private client: Client | null = null;
   private status: EngineStatus = EngineStatus.DISCONNECTED;
@@ -154,12 +238,102 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   private phoneNumber: string | null = null;
   private pushName: string | null = null;
   private callbacks: EngineEventCallbacks = {};
+  private readyReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  private readyReconcileStartedAt = 0;
+  private readyReconcileProbeInFlight = false;
+  // Guards the stuck-auth self-heal so it runs at most once per engine: a re-paired session that still
+  // can't reach readiness fails terminally instead of looping QR -> timeout -> clear forever.
+  private stuckAuthRecoveryAttempted = false;
+  // Set once teardown begins so a late 'authenticated' can't resurrect a disconnecting adapter. Not
+  // reset — an adapter is single-use after teardown (the session creates a fresh one to reconnect).
+  private tearingDown = false;
 
   constructor(private readonly config: WhatsAppWebJsConfig) {
     super();
   }
 
   private readonly logger = createLogger('WhatsAppWebJsAdapter');
+  // Bound concurrent inbound media downloads: downloadMedia() materialises the full base64 blob, so an
+  // unbounded burst could stack many multi-MB allocations.
+  private readonly inboundLimiter = new ConcurrencyLimiter(inboundMediaConcurrency());
+
+  /**
+   * Download inbound media safely. downloadMedia() can't be size-bounded at the source, so (1) pre-gate
+   * on the sender-declared size and skip the download entirely when it exceeds the cap, and (2) run the
+   * download through the concurrency limiter for backpressure. Returns undefined when there's no media.
+   */
+  private async capInboundMediaFor(msg: Message): Promise<IncomingMessage['media'] | undefined> {
+    if (!isMediaDownloadEnabled()) {
+      const data = (msg as unknown as { _data?: { size?: number; mimetype?: string; filename?: string } })._data;
+      return {
+        mimetype: data?.mimetype ?? '',
+        filename: data?.filename || undefined,
+        omitted: true,
+        sizeBytes: coerceDeclaredSize(data?.size),
+      };
+    }
+    const maxBytes = inboundMediaMaxBytes();
+    const data = (msg as unknown as { _data?: { size?: number; mimetype?: string; filename?: string } })._data;
+    const declared = coerceDeclaredSize(data?.size);
+    if (declared > maxBytes) {
+      this.logger.warn('Inbound media declared size exceeds MEDIA_DOWNLOAD_MAX_BYTES; skipped download', {
+        msgId: msg.id._serialized,
+        sizeBytes: declared,
+      });
+      return {
+        mimetype: data?.mimetype ?? '',
+        filename: data?.filename || undefined,
+        omitted: true,
+        sizeBytes: declared,
+      };
+    }
+    // msg.downloadMedia() can't be aborted, so freeing the slot the moment the wall-clock deadline fires
+    // would admit a fresh download while the abandoned one is still materialising in heap — letting the
+    // number of in-flight downloads exceed inboundMediaConcurrency(). Instead, HOLD the slot until the real
+    // download settles; the caller still unblocks on the timeout race and emits the message without media.
+    // boundedReady adopts the timeout-bounded race (a Promise resolving a Promise flattens), so awaiting it
+    // unblocks the caller once the task is admitted AND the deadline-or-download settles — yielding the
+    // media or null on timeout.
+    let resolveBounded: (value: MessageMedia | null | PromiseLike<MessageMedia | null>) => void = () => undefined;
+    const boundedReady = new Promise<MessageMedia | null>(resolve => {
+      resolveBounded = resolve;
+    });
+    const slotHeld = this.inboundLimiter.run(() => {
+      const download = msg.downloadMedia();
+      resolveBounded(
+        withInboundDownloadTimeout(download, inboundMediaTimeoutMs(), () =>
+          this.logger.warn(
+            'Inbound media download timed out (MEDIA_DOWNLOAD_TIMEOUT_MS); emitting message without media',
+            {
+              msgId: msg.id._serialized,
+            },
+          ),
+        ),
+      );
+      // Keep the slot occupied until the underlying download truly settles, not the timeout race.
+      return download.then(
+        () => undefined,
+        () => undefined,
+      );
+    });
+    // The slot-holder runs in the background; never let it surface as an unhandled rejection.
+    void slotHeld.catch(() => undefined);
+    const media = await boundedReady;
+    if (!media) return undefined;
+    const capped = capInboundMedia({
+      mimetype: media.mimetype,
+      filename: media.filename || undefined,
+      sizeBytes: Buffer.byteLength(media.data, 'base64'),
+      toBase64: () => media.data,
+    });
+    if (capped.omitted) {
+      this.logger.warn('Inbound media exceeds MEDIA_DOWNLOAD_MAX_BYTES; dropped payload, kept envelope', {
+        msgId: msg.id._serialized,
+        sizeBytes: capped.sizeBytes,
+      });
+    }
+    return capped;
+  }
 
   async initialize(callbacks: EngineEventCallbacks): Promise<void> {
     this.callbacks = callbacks;
@@ -177,19 +351,40 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         '--disable-gpu',
       ];
 
-      // Add proxy configuration if provided
+      // Add proxy configuration if provided — but only when the URL parses to a supported scheme, so
+      // a malformed/stored proxy value can't break the Chromium launch or smuggle a non-proxy scheme.
+      let proxyAuthentication: { username: string; password: string } | undefined;
       if (this.config.proxy) {
-        puppeteerArgs.push(`--proxy-server=${this.config.proxy.url}`);
-        this.logger.log(
-          `Using proxy: ${this.config.proxy.type}://${this.config.proxy.url.replace(/:[^:@]*@/, ':***@')}`,
-        );
+        if (isSupportedProxyUrl(this.config.proxy.url)) {
+          // Chromium ignores credentials in --proxy-server; pass a credential-less server and hand the
+          // username/password to wwjs's proxyAuthentication (page.authenticate) for HTTP/HTTPS proxies (#628).
+          const proxyLaunch = buildProxyLaunchConfig(this.config.proxy.url);
+          puppeteerArgs.push(`--proxy-server=${proxyLaunch.serverArg}`);
+          proxyAuthentication = proxyLaunch.proxyAuthentication;
+          if (proxyLaunch.socksAuthUnsupported) {
+            this.logger.warn(
+              `Proxy for session ${this.config.sessionId} has credentials on a SOCKS proxy, but Chromium ` +
+                `cannot authenticate SOCKS proxies. Use an IP-authorized proxy or an HTTP/HTTPS proxy instead.`,
+            );
+          }
+          this.logger.log(`Using proxy: ${proxyLaunch.serverArg}`);
+        } else {
+          this.logger.warn(`Ignoring invalid proxy URL for session ${this.config.sessionId}`);
+        }
       }
 
       // Pin the WA-Web version when configured (fixes the 1.34.x "stuck at authenticating"
       // hang on some setups, #251). Opt-in: unset leaves whatsapp-web.js to auto-select.
-      const versionPin = resolveWebVersionPin();
+      const versionPin = await resolveWebVersionPin();
       if (versionPin) {
         this.logger.log(`Pinning WhatsApp Web version ${versionPin.webVersion}`);
+      }
+
+      // Extend the first-boot init wait on slow setups (WSL2/low-resource), #353. Opt-in:
+      // unset keeps whatsapp-web.js's 30000ms default.
+      const authTimeoutMs = resolveAuthTimeoutMs();
+      if (authTimeoutMs) {
+        this.logger.log(`Using auth timeout ${authTimeoutMs}ms`);
       }
 
       this.client = new Client({
@@ -200,17 +395,20 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         puppeteer: {
           headless: this.config.puppeteer?.headless ?? true,
           args: puppeteerArgs,
-          // Bound how long a single CDP call may hang before it rejects, so a stuck Chromium
-          // op (typing/presence, send, download) fails fast instead of wedging the worker and
-          // cascading into ProtocolError. Only applied when PUPPETEER_PROTOCOL_TIMEOUT_MS is set.
-          ...(Number.isInteger(Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10)) &&
-          Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10) > 0
-            ? { protocolTimeout: Number.parseInt(process.env.PUPPETEER_PROTOCOL_TIMEOUT_MS ?? '', 10) }
-            : {}),
+          // Do NOT let Puppeteer install its own process signal handlers. By default it handles
+          // SIGINT (→ synchronous process.exit(130), which would skip the graceful drain entirely)
+          // and SIGTERM/SIGHUP (→ kills Chromium at signal time, defeating the drain window). We own
+          // signal handling in main.ts. Puppeteer's unconditional `exit` hook still SIGKILLs this
+          // browser when the process actually exits, so nothing is orphaned.
+          handleSIGINT: false,
+          handleSIGTERM: false,
+          handleSIGHUP: false,
           // Only override the executable when explicitly configured; otherwise let
           // whatsapp-web.js fall back to Puppeteer's bundled Chromium.
           ...(this.config.puppeteer?.executablePath ? { executablePath: this.config.puppeteer.executablePath } : {}),
         },
+        ...(authTimeoutMs !== undefined ? { authTimeoutMs } : {}),
+        ...(proxyAuthentication ? { proxyAuthentication } : {}),
         ...(versionPin ?? {}),
       });
 
@@ -229,6 +427,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     this.client.on('qr', async (qr: string) => {
+      // A 'qr' buffered by a wedged page can flush during the awaited client.destroy() (teardown sets
+      // tearingDown + DISCONNECTED first) or after recoverFromStuckAuth() nulls this.client. Ignore it so a
+      // late event can't resurrect a disconnecting adapter to QR_READY and re-emit a stale QR. Mirrors the
+      // 'authenticated' guard below; the normal first QR is unaffected (not tearing down, not FAILED, client set).
+      if (this.tearingDown || this.status === EngineStatus.FAILED || !this.client) {
+        return;
+      }
       try {
         this.qrCode = await qrcode.toDataURL(qr);
         this.setStatus(EngineStatus.QR_READY);
@@ -239,22 +444,25 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     });
 
     this.client.on('authenticated', () => {
+      // Only the first authentication starts the reconcile window. Ignore a re-fired 'authenticated'
+      // while already AUTHENTICATING (so it can't restart the 90s deadline), once READY/FAILED, or any
+      // time during/after teardown (so a late event can't resurrect a disconnecting adapter). The
+      // initial status is DISCONNECTED, so teardown is distinguished by the flag, not by DISCONNECTED.
+      if (
+        this.tearingDown ||
+        this.status === EngineStatus.AUTHENTICATING ||
+        this.status === EngineStatus.READY ||
+        this.status === EngineStatus.FAILED
+      ) {
+        return;
+      }
       this.setStatus(EngineStatus.AUTHENTICATING);
       this.qrCode = null;
+      this.scheduleReadyReconcile();
     });
 
     this.client.on('ready', () => {
-      try {
-        const info = this.client?.info;
-        this.phoneNumber = info?.wid?.user || null;
-        this.pushName = info?.pushname || null;
-        this.setStatus(EngineStatus.READY);
-        this.callbacks.onReady?.(this.phoneNumber || '', this.pushName || '');
-      } catch (error) {
-        this.logger.error('Error getting client info', String(error));
-        this.setStatus(EngineStatus.READY);
-        this.callbacks.onReady?.('', '');
-      }
+      this.markReadyFromClientInfo();
     });
 
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
@@ -262,15 +470,20 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       try {
         const incomingMessage: IncomingMessage = buildIncomingMessageBase(msg);
 
-        // Enrich the sender contact with the saved name (best-effort, from the WhatsApp Web cache).
-        // `author`/`from` resolve to the actual sender for group and 1:1 messages respectively.
+        // Attach the sender's contact info. getContact() gives the real sender (author in groups, from
+        // in 1:1); we read only its synchronous fields and never the async getters (profile pic, about),
+        // which would hit WhatsApp on every message.
         try {
           const contact = await msg.getContact();
-          if (contact?.name || contact?.pushname) {
-            incomingMessage.contact = {
-              name: contact.name || incomingMessage.contact?.name,
-              pushName: contact.pushname || incomingMessage.contact?.pushName,
-            };
+          if (contact) {
+            // Off by default the payload keeps { name, pushName }; WEBHOOK_CONTACT_DETAILS opts into the
+            // full set. Merge over the base so the notifyName pushName isn't lost, and skip an empty
+            // result so we don't emit an empty contact object.
+            const full = process.env.WEBHOOK_CONTACT_DETAILS === 'true';
+            const merged = { ...incomingMessage.contact, ...mapContactFields(contact, full) };
+            if (Object.keys(merged).length > 0) {
+              incomingMessage.contact = merged;
+            }
           }
         } catch (error) {
           this.logger.error('Error getting message contact', String(error));
@@ -287,36 +500,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           };
         }
 
-        // Handle media. When INBOUND_MEDIA_MAX_BYTES is set, skip the download for any file
-        // larger than the limit *before* calling downloadMedia() — a big inbound file never
-        // spins up a Chromium download, which is the root cause of ProtocolError/RAM spikes,
-        // base64 DB bloat, and 413s (with their retries) on webhook delivery. The message is
-        // still delivered as metadata-only (skippedMedia:true). Unset env = original behaviour.
+        // Handle media
         if (msg.hasMedia) {
-          const maxRaw = Number.parseInt(process.env.INBOUND_MEDIA_MAX_BYTES ?? '', 10);
-          const maxBytes = Number.isInteger(maxRaw) && maxRaw > 0 ? maxRaw : Number.POSITIVE_INFINITY;
-          const sizeBytes = (msg as unknown as { _data?: { size?: number } })._data?.size ?? 0;
-
-          if (sizeBytes > maxBytes) {
-            incomingMessage.skippedMedia = true;
-            incomingMessage.mediaSizeBytes = sizeBytes;
-            this.logger.warn(
-              `Skipping oversized inbound media (${sizeBytes} bytes > ${maxBytes} limit) for message ${msg.id?._serialized ?? '<unknown>'}; not downloaded, not stored, not forwarded as bytes`,
-            );
-          } else {
-            try {
-              const media = await msg.downloadMedia();
-              if (media) {
-                incomingMessage.media = {
-                  mimetype: media.mimetype,
-                  filename: media.filename || undefined,
-                  data: media.data,
-                };
-                if (sizeBytes > 0) incomingMessage.mediaSizeBytes = sizeBytes;
-              }
-            } catch (error) {
-              this.logger.error('Error downloading media', String(error));
-            }
+          try {
+            const capped = await this.capInboundMediaFor(msg);
+            if (capped) incomingMessage.media = capped;
+          } catch (error) {
+            this.logger.error('Error downloading media', String(error));
           }
         }
 
@@ -332,6 +522,11 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
             this.logger.error('Error getting quoted message', String(error));
           }
         }
+
+        // Surface call-log detail on the live path too (getChatHistory already does this), so a missed/
+        // video incoming call renders a labeled bubble instead of a generic "Call".
+        const call = extractWwebjsCall(msg);
+        if (call) incomingMessage.call = call;
 
         this.callbacks.onMessage?.(incomingMessage);
       } catch (error) {
@@ -361,13 +556,19 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       this.callbacks.onMessageAck?.(msg.id._serialized, wwebjsAckToDeliveryStatus(ack));
     });
 
-    this.client.on('message_revoke_everyone', after => {
+    this.client.on('message_revoke_everyone', (after, before) => {
       try {
         const selfWid = this.client?.info?.wid?._serialized;
         // Emit structured data only; the engine layer never produces a localized
         // display string. The dashboard renders the localized "message deleted" text.
+        //
+        // `after` is the revocation notification (its own id); `before` is the
+        // ORIGINAL deleted message (when whatsapp-web.js has it in the local store).
+        // We forward `before.id` as `revokedId` so consumers can reconcile the
+        // deleted message in their own storage.
         const payload: RevokedMessage = {
           id: after.id._serialized,
+          revokedId: before?.id?._serialized,
           chatId: after.from === selfWid ? after.to : after.from,
           from: after.from,
           to: after.to,
@@ -396,11 +597,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     });
 
     this.client.on('disconnected', reason => {
+      this.clearReadyReconcile();
       this.setStatus(EngineStatus.DISCONNECTED);
       this.callbacks.onDisconnected?.(reason);
     });
 
     this.client.on('auth_failure', (message?: string) => {
+      this.clearReadyReconcile();
       this.setStatus(EngineStatus.FAILED);
       // Authentication failure is terminal: the stored credentials are invalid and
       // reconnecting will not help — the operator must re-scan the QR code. Route it
@@ -409,51 +612,229 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     });
   }
 
+  private markReadyFromClientInfo(): void {
+    if ([EngineStatus.READY, EngineStatus.DISCONNECTED, EngineStatus.FAILED].includes(this.status)) return;
+    this.clearReadyReconcile();
+    try {
+      const info = this.client?.info;
+      this.phoneNumber = info?.wid?.user || null;
+      this.pushName = info?.pushname || null;
+      this.setStatus(EngineStatus.READY);
+      this.callbacks.onReady?.(this.phoneNumber || '', this.pushName || '');
+    } catch (error) {
+      this.logger.error('Error getting client info', String(error));
+      this.setStatus(EngineStatus.READY);
+      this.callbacks.onReady?.('', '');
+    }
+  }
+
+  private scheduleReadyReconcile(): void {
+    this.clearReadyReconcile();
+    this.readyReconcileStartedAt = Date.now();
+
+    const tick = (): void => {
+      if (!this.client || this.status !== EngineStatus.AUTHENTICATING) {
+        this.clearReadyReconcile();
+        return;
+      }
+
+      // Deadline checked at the TOP of every tick (not after the probe) so a slow/hung getState() — a
+      // wedged page can make it never resolve, the very #251/#273 condition — can't defeat the 90s ceiling.
+      if (Date.now() - this.readyReconcileStartedAt >= READY_RECONCILE_TIMEOUT_MS) {
+        this.logger.warn(
+          'Timed out waiting for WhatsApp Web runtime readiness after authentication — the saved session ' +
+            'is stuck after the QR scan (usually the auto-selected WhatsApp Web build is incompatible). ' +
+            'Clearing it to re-pair; pin a known-good version via WWEBJS_WEB_VERSION (see ' +
+            'docs/12-troubleshooting-faq.md) if it keeps recurring.',
+        );
+        this.clearReadyReconcile();
+        // Self-heal: don't leave the session stuck at "authenticating" forever — clear the broken auth
+        // and disconnect so the lifecycle re-pairs (a fresh QR) instead of hanging.
+        void this.recoverFromStuckAuth();
+        return;
+      }
+
+      // Schedule the next tick up front, independent of the probe, so a hung probe can never stall the
+      // loop. The probe runs fire-and-forget with at-most-one in flight: if the previous one is still
+      // pending (hung), skip this round — the loop keeps ticking and gives up at the deadline above.
+      this.readyReconcileTimer = setTimeout(tick, READY_RECONCILE_INTERVAL_MS);
+      this.readyReconcileTimer.unref?.();
+
+      if (this.readyReconcileProbeInFlight) return;
+      this.readyReconcileProbeInFlight = true;
+      void this.isClientRuntimeReady()
+        .then(ready => {
+          if (ready && this.client && this.status === EngineStatus.AUTHENTICATING) {
+            this.logger.warn('WhatsApp Web ready event was missed; reconciling from connected runtime state');
+            this.markReadyFromClientInfo();
+          }
+        })
+        .catch(error => this.logger.debug('Ready reconciliation probe failed', { error: String(error) }))
+        .finally(() => {
+          this.readyReconcileProbeInFlight = false;
+        });
+    };
+
+    this.readyReconcileTimer = setTimeout(tick, READY_RECONCILE_INTERVAL_MS);
+    this.readyReconcileTimer.unref?.();
+  }
+
+  private clearReadyReconcile(): void {
+    if (this.readyReconcileTimer) {
+      clearTimeout(this.readyReconcileTimer);
+      this.readyReconcileTimer = null;
+    }
+    this.readyReconcileStartedAt = 0;
+    this.readyReconcileProbeInFlight = false;
+  }
+
+  /**
+   * Recover a session that authenticated but never reached runtime readiness (stale/incompatible auth
+   * or a wedged page). Clear the broken LocalAuth and disconnect so the session lifecycle re-pairs (a
+   * fresh QR) instead of hanging at "authenticating". Runs at most once per engine — a re-paired session
+   * that still can't reach readiness fails terminally rather than looping.
+   */
+  private async recoverFromStuckAuth(): Promise<void> {
+    if (this.stuckAuthRecoveryAttempted) {
+      this.setStatus(EngineStatus.FAILED);
+      this.callbacks.onError?.(
+        'WhatsApp Web could not reach readiness after re-pairing. Pin WWEBJS_WEB_VERSION to a known-good build and try again.',
+      );
+      return;
+    }
+    this.stuckAuthRecoveryAttempted = true;
+
+    const client = this.client;
+    this.client = null;
+    // Clear auth + disconnect FIRST (the recovery path), then tear the wedged client down in the
+    // background so a hung Chromium destroy can't block (or skip) the recovery.
+    await this.clearLocalAuth();
+    this.setStatus(EngineStatus.DISCONNECTED);
+    // onDisconnected drives the lifecycle's reconnect, which re-creates the engine with no saved auth
+    // → a fresh QR. (A no-op once the engine is superseded/torn down.)
+    this.callbacks.onDisconnected?.('Saved session could not be restored; cleared for re-pairing');
+    if (typeof client?.destroy === 'function') void client.destroy().catch(() => undefined);
+  }
+
+  /** Remove this session's LocalAuth directory so the next start re-pairs from a clean slate. */
+  private async clearLocalAuth(): Promise<void> {
+    const dir = path.join(path.resolve(this.config.sessionDataPath), `session-${this.config.sessionId}`);
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
+      this.logger.warn(`Could not clear stale auth at ${dir}`, { error: String(error) });
+    });
+  }
+
+  private async isClientRuntimeReady(): Promise<boolean> {
+    if (!this.client) return false;
+    if ((await this.client.getState()) !== WAState.CONNECTED) return false;
+    if (!this.client.info?.wid?.user) return false;
+
+    const page = (this.client as unknown as { pupPage?: { evaluate: <T>(fn: () => T) => Promise<T> } }).pupPage;
+    const hasWWebJS = await page?.evaluate(
+      () => typeof (window as unknown as { WWebJS?: unknown }).WWebJS !== 'undefined',
+    );
+    return hasWWebJS === true;
+  }
+
   private setStatus(status: EngineStatus): void {
     this.status = status;
     this.callbacks.onStateChanged?.(status);
     this.emit('stateChanged', status);
   }
 
-  async disconnect(): Promise<void> {
-    if (this.client) {
-      try {
-        // Use destroy instead of logout to preserve session data
-        // This allows reconnecting without needing to scan QR again
-        await this.client.destroy();
-      } catch (error) {
-        this.logger.warn('Destroy client failed:', String(error));
-        // Already destroyed or not initialized - ignore
-      }
-      this.client = null;
+  private beginClientTeardown(): Client | null {
+    const client = this.client;
+    if (!client) return null;
+
+    this.tearingDown = true;
+    this.clearReadyReconcile();
+    if (this.status !== EngineStatus.DISCONNECTED) {
       this.setStatus(EngineStatus.DISCONNECTED);
+    }
+
+    return client;
+  }
+
+  private finishClientTeardown(client: Client): void {
+    if (this.client === client) {
+      this.client = null;
+    }
+    this.clearReadyReconcile();
+  }
+
+  async disconnect(): Promise<void> {
+    const client = this.beginClientTeardown();
+    if (!client) return;
+
+    try {
+      // Use destroy instead of logout to preserve session data
+      // This allows reconnecting without needing to scan QR again
+      await client.destroy();
+    } catch (error) {
+      this.logger.warn('Destroy client failed:', { error: String(error) });
+      // Already destroyed or not initialized - ignore
+    } finally {
+      this.finishClientTeardown(client);
     }
   }
 
   async logout(): Promise<void> {
-    if (this.client) {
+    const client = this.beginClientTeardown();
+    if (!client) return;
+
+    try {
+      // Logout clears session data - user will need to scan QR again
+      await client.logout();
+    } catch (error) {
+      this.logger.warn('Logout failed:', { error: String(error) });
+      // Fall back to destroy if logout fails
       try {
-        // Logout clears session data - user will need to scan QR again
-        await this.client.logout();
-      } catch (error) {
-        this.logger.warn('Logout failed:', String(error));
-        // Fall back to destroy if logout fails
-        try {
-          await this.client.destroy();
-        } catch (destroyError) {
-          this.logger.warn('Client destroy also failed during logout fallback', String(destroyError));
-        }
+        await client.destroy();
+      } catch (destroyError) {
+        this.logger.warn('Client destroy also failed during logout fallback', { error: String(destroyError) });
       }
-      this.client = null;
-      this.setStatus(EngineStatus.DISCONNECTED);
+    } finally {
+      this.finishClientTeardown(client);
     }
   }
 
   async destroy(): Promise<void> {
-    if (this.client) {
-      await this.client.destroy();
-      this.client = null;
-      this.setStatus(EngineStatus.DISCONNECTED);
+    const client = this.beginClientTeardown();
+    if (!client) return;
+
+    try {
+      await client.destroy();
+    } finally {
+      this.finishClientTeardown(client);
+    }
+  }
+
+  /**
+   * Force-recover a wedged session: SIGKILL THIS client's own Chromium process directly (not a
+   * process-wide `pkill`, which would also kill other sessions), then best-effort `client.destroy()`
+   * for the rest of the cleanup. Both steps are wrapped so a missing process handle or a hung destroy
+   * can't prevent the engine from being torn down and the status reset.
+   */
+  async forceDestroy(): Promise<void> {
+    const client = this.beginClientTeardown();
+    if (!client) return;
+
+    try {
+      // pupBrowser is the Puppeteer Browser; .process() is the Chromium ChildProcess (null if already gone).
+      const proc = (
+        client as unknown as { pupBrowser?: { process?: () => { kill?: (sig: string) => void } | null } }
+      ).pupBrowser?.process?.();
+      proc?.kill?.('SIGKILL');
+    } catch (err) {
+      this.logger.warn('forceDestroy: failed to kill the browser process', { error: String(err) });
+    }
+
+    try {
+      await client.destroy();
+    } catch (err) {
+      this.logger.warn('forceDestroy: client.destroy() failed after the kill (continuing)', { error: String(err) });
+    } finally {
+      this.finishClientTeardown(client);
     }
   }
 
@@ -485,9 +866,84 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     return this.pushName;
   }
 
-  async sendTextMessage(chatId: string, text: string): Promise<MessageResult> {
+  // Cache of resolved individual recipients: `<phone>@c.us` -> the id `sendMessage` accepts (a
+  // `<lid>@lid` for a migrated contact, or the confirmed `@c.us` for a non-migrated one). `getNumberId`
+  // is a rate-limited WhatsApp Web existence probe that also throws intermittently, so caching every
+  // confirmed resolution keeps ordinary sends from re-probing on each message (#580). A `@lid` is
+  // stable; a stale entry (a contact that migrates mid-session) self-heals via the retry in
+  // `sendResolved`.
+  // ponytail: unbounded Map, bounded in practice by distinct recipients per session; add an LRU only
+  // if a session ever addresses a truly unbounded set of fresh numbers.
+  private readonly resolvedSendIds = new Map<string, string>();
+
+  /**
+   * Resolve an individual (`@c.us`) recipient to the id whatsapp-web.js will accept. WhatsApp has
+   * migrated some contacts to privacy-id addressing, for which `sendMessage` throws `No LID for user`
+   * on the phone WID but accepts the `@lid` that `getNumberId` returns (#573). Any server-confirmed
+   * resolution (a distinct `@lid` OR a confirmed non-migrated `@c.us`) is cached, since it is stable
+   * and re-probing costs a rate-limited round-trip (#580); a `null`/thrown lookup is NOT cached so an
+   * unregistered or transiently-flaky contact keeps being retried. Groups/channels and already-`@lid`
+   * targets are returned unchanged, and any resolution failure falls back to the original id so a send
+   * is never blocked on it.
+   */
+  private async resolveSendId(chatId: string): Promise<string> {
+    if (!chatId.endsWith('@c.us')) {
+      return chatId;
+    }
+    const cached = this.resolvedSendIds.get(chatId);
+    if (cached) {
+      return cached;
+    }
+    try {
+      const wid = await this.getNumberId(chatId);
+      if (wid) {
+        this.resolvedSendIds.set(chatId, wid);
+        if (wid.endsWith('@lid')) {
+          // Persist the learned phone -> lid so the message read-path (resolveJidCandidates) can
+          // bridge this contact's `@c.us` and `@lid` rows on a pure whatsapp-web.js deployment
+          // (#583 R3). Fire-and-forget: resolution (and the send) must never block/fail on the write.
+          void this.config.lidMappingStore
+            ?.remember(userPart(wid), userPart(chatId), this.config.sessionId)
+            ?.catch(() => {});
+        }
+        return wid;
+      }
+      return chatId;
+    } catch {
+      return chatId;
+    }
+  }
+
+  /**
+   * Resolve `chatId` and run `send` against the resolved id. If the send fails with `No LID for user`
+   * — the signature of a contact whose cached/resolved id is stale (typically a `@c.us` for a contact
+   * that has since migrated to `@lid`) — drop the mapping, re-resolve once, and retry only if the
+   * fresh id differs, so a genuinely unreachable recipient surfaces its error instead of looping.
+   */
+  private async sendResolved<T>(chatId: string, send: (to: string) => Promise<T>): Promise<T> {
+    const to = await this.resolveSendId(chatId);
+    try {
+      return await send(to);
+    } catch (err) {
+      if (!chatId.endsWith('@c.us') || !isNoLidForUserError(err)) {
+        throw err;
+      }
+      this.resolvedSendIds.delete(chatId);
+      const fresh = await this.resolveSendId(chatId);
+      if (fresh === to) {
+        throw err;
+      }
+      return send(fresh);
+    }
+  }
+
+  async sendTextMessage(chatId: string, text: string, mentions?: string[]): Promise<MessageResult> {
     this.ensureReady();
-    const msg = await this.client!.sendMessage(chatId, text);
+    // wwebjs accepts neutral `<phone>@c.us` WIDs directly as mentionedJidList, so no de-normalization
+    // is needed. Omit the options object entirely when none are given to keep today's send behavior.
+    const msg = await this.sendResolved(chatId, to =>
+      mentions?.length ? this.client!.sendMessage(to, text, { mentions }) : this.client!.sendMessage(to, text),
+    );
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
@@ -503,20 +959,24 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   }
 
   async sendAudioMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
-    return this.sendMediaMessage(chatId, media);
+    return this.sendMediaMessage(chatId, media, media.ptt ? { sendAudioAsVoice: true } : undefined);
   }
 
   async sendDocumentMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     return this.sendMediaMessage(chatId, media);
   }
 
-  private async sendMediaMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
+  private async sendMediaMessage(
+    chatId: string,
+    media: MediaInput,
+    extraOptions?: { sendAudioAsVoice?: boolean },
+  ): Promise<MessageResult> {
     this.ensureReady();
 
     let messageMedia: MessageMedia;
 
     if (typeof media.data === 'string') {
-      if (media.data.startsWith('http://') || media.data.startsWith('https://')) {
+      if (isHttpUrl(media.data)) {
         // URL
         messageMedia = await loadRemoteMedia(media.data);
       } else {
@@ -528,9 +988,15 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       messageMedia = new MessageMedia(media.mimetype, media.data.toString('base64'), media.filename);
     }
 
-    const msg = await this.client!.sendMessage(chatId, messageMedia, {
-      caption: media.caption,
-    });
+    // Build the media once (a remote URL is fetched here); sendResolved may retry the send itself.
+    const msg = await this.sendResolved(chatId, to =>
+      this.client!.sendMessage(to, messageMedia, {
+        caption: media.caption,
+        ...(media.mentions?.length ? { mentions: media.mentions } : {}),
+        // sendAudioAsVoice only for audio; {...undefined} contributes no keys.
+        ...extraOptions,
+      }),
+    );
 
     return {
       id: msg.id._serialized,
@@ -565,7 +1031,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         isBlocked: contact.isBlocked,
       };
     } catch (error) {
-      this.logger.warn(`Failed to get contact: ${contactId}`, String(error));
+      this.logger.warn(`Failed to get contact: ${contactId}`, { error: String(error) });
       return null;
     }
   }
@@ -635,7 +1101,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       name: location.description || '',
       address: location.address || '',
     });
-    const msg = await this.client!.sendMessage(chatId, loc);
+    const msg = await this.sendResolved(chatId, to => this.client!.sendMessage(to, loc));
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
@@ -644,18 +1110,15 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async sendContactMessage(chatId: string, contact: ContactCard): Promise<MessageResult> {
     this.ensureReady();
-    // Create vCard format
-    const vcard = [
-      'BEGIN:VCARD',
-      'VERSION:3.0',
-      `FN:${contact.name}`,
-      `TEL;type=CELL;type=VOICE;waid=${contact.number}:+${contact.number}`,
-      'END:VCARD',
-    ].join('\n');
+    // Shared builder sanitizes name/number (strips CR/LF, digits-only waid) so a crafted contact
+    // can't inject extra vCard fields — the previous inline build interpolated raw values.
+    const vcard = buildVCard(contact);
 
-    const msg = await this.client!.sendMessage(chatId, vcard, {
-      parseVCards: true,
-    });
+    const msg = await this.sendResolved(chatId, to =>
+      this.client!.sendMessage(to, vcard, {
+        parseVCards: true,
+      }),
+    );
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
@@ -667,7 +1130,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     let messageMedia: MessageMedia;
 
     if (typeof media.data === 'string') {
-      if (media.data.startsWith('http://') || media.data.startsWith('https://')) {
+      if (isHttpUrl(media.data)) {
         messageMedia = await loadRemoteMedia(media.data);
       } else {
         messageMedia = new MessageMedia(media.mimetype, media.data, media.filename);
@@ -676,9 +1139,33 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       messageMedia = new MessageMedia(media.mimetype, media.data.toString('base64'), media.filename);
     }
 
-    const msg = await this.client!.sendMessage(chatId, messageMedia, {
-      sendMediaAsSticker: true,
-    });
+    const msg = await this.sendResolved(chatId, to =>
+      this.client!.sendMessage(to, messageMedia, {
+        sendMediaAsSticker: true,
+      }),
+    );
+    return {
+      id: msg.id._serialized,
+      timestamp: msg.timestamp,
+    };
+  }
+
+  async sendPollMessage(chatId: string, poll: PollInput): Promise<MessageResult> {
+    this.ensureReady();
+    // Import Poll dynamically like Location; the .default fallback covers builds where the
+    // classes land on module.default (a plain `module.Poll` would be undefined there and
+    // `new Poll` fails with "not a constructor").
+    const module = await import('whatsapp-web.js');
+    const Poll = module.Poll || module.default?.Poll;
+
+    // wwebjs's typings mark `messageSecret` as required, but at runtime it is optional (it is
+    // only used as a custom poll id), so cast to the constructor's options type to pass just
+    // allowMultipleAnswers.
+    type PollSendOptions = ConstructorParameters<typeof Poll>[2];
+    const pollOptions = { allowMultipleAnswers: poll.allowMultipleAnswers === true } as PollSendOptions;
+    const msg = await this.sendResolved(chatId, to =>
+      this.client!.sendMessage(to, new Poll(poll.name, poll.options, pollOptions)),
+    );
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
@@ -693,10 +1180,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     const quotedMsg = messages.find(m => m.id._serialized === quotedMsgId);
 
     if (!quotedMsg) {
-      throw new Error(`Message ${quotedMsgId} not found`);
+      throw new MessageNotFoundError(quotedMsgId);
     }
 
-    const msg = await quotedMsg.reply(text);
+    // Reply's send leg hits the same `No LID for user` path as a normal send for a migrated contact,
+    // so route it through sendResolved (resolve @c.us->@lid, cache, self-heal). reply(content, chatId)
+    // accepts an explicit target (#583 R1).
+    const msg = await this.sendResolved(chatId, to => quotedMsg.reply(text, to));
     return {
       id: msg.id._serialized,
       timestamp: msg.timestamp,
@@ -710,15 +1200,42 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     const msgToForward = messages.find(m => m.id._serialized === messageId);
 
     if (!msgToForward) {
-      throw new Error(`Message ${messageId} not found`);
+      throw new MessageNotFoundError(messageId);
     }
 
-    await msgToForward.forward(toChatId);
-    // forward() returns void, so we generate a result based on original message
-    return {
-      id: `fwd_${messageId}`,
-      timestamp: Date.now(),
-    };
+    // The forward's send leg fails with `No LID for user` for a LID-migrated destination, so resolve
+    // it (and self-heal a stale mapping) via sendResolved. Capture the id actually sent to so the
+    // id-recovery below reads back from the SAME (resolved) chat, not the raw @c.us (#583 R1).
+    let resolvedTo = toChatId;
+    await this.sendResolved(toChatId, to => {
+      resolvedTo = to;
+      return msgToForward.forward(to);
+    });
+
+    // whatsapp-web.js's forward() returns void, so BEST-EFFORT recover the REAL id of the sent copy by
+    // reading it back from the destination chat (the most recent outgoing message). The delivery-ack
+    // matcher keys on this id, so a synthetic one would leave the forward stuck at SENT; Baileys already
+    // returns the real id. The forward already succeeded here, so recovery must NEVER fail the operation.
+    // When the copy can't be identified we return an explicit-unknown id (empty): message.service then
+    // leaves the row's waMessageId unset so no ack can mis-match it — unlike a synthetic or source id,
+    // which could cross-drive another row's delivery status. Concurrent forwards to the same chat may
+    // mis-identify the copy — acceptable for delivery-status accuracy.
+    try {
+      const destChat = await this.client!.getChatById(resolvedTo);
+      const sentByMe = (await destChat?.fetchMessages({ limit: 5, fromMe: true })) ?? [];
+      let sent: (typeof sentByMe)[number] | undefined;
+      for (const m of sentByMe) {
+        if (!sent || m.timestamp > sent.timestamp) {
+          sent = m;
+        }
+      }
+      if (sent) {
+        return { id: sent.id._serialized, timestamp: sent.timestamp };
+      }
+    } catch (error) {
+      this.logger.warn(`Forward succeeded but recovering the sent message id failed: ${String(error)}`);
+    }
+    return { id: '', timestamp: Math.floor(Date.now() / 1000) };
   }
 
   // ============= Phase 3: Group Management =============
@@ -751,7 +1268,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         linkedParentJID: extractLinkedParentJID(groupChat.groupMetadata),
       };
     } catch (error) {
-      this.logger.warn(`Failed to get group: ${groupId}`, String(error));
+      this.logger.warn(`Failed to get group: ${groupId}`, { error: String(error) });
       return null;
     }
   }
@@ -840,11 +1357,14 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   // Reactions (Phase 3)
   async reactToMessage(chatId: string, messageId: string, emoji: string): Promise<void> {
     this.ensureReady();
+    // NOTE: do NOT resolve chatId to @lid here — whatsapp-web.js reacts using the found message's own
+    // id, not this chatId, so LID-resolving the lookup gives no send benefit and would miss a message
+    // stored under the pre-migration @c.us chat (#583 R1 review).
     const chat = await this.client!.getChatById(chatId);
     const messages = await chat.fetchMessages({ limit: 100 });
     const message = messages.find(m => m.id._serialized === messageId);
     if (!message) {
-      throw new Error(`Message ${messageId} not found in chat ${chatId}`);
+      throw new MessageNotFoundError(messageId, chatId);
     }
     await (message as MessageWithReactions).react(emoji);
     this.logger.log(`Reacted to message ${messageId} with ${emoji || '(removed)'}`);
@@ -856,7 +1376,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     const messages = await chat.fetchMessages({ limit: 100 });
     const message = messages.find(m => m.id._serialized === messageId);
     if (!message) {
-      throw new Error(`Message ${messageId} not found in chat ${chatId}`);
+      throw new MessageNotFoundError(messageId, chatId);
     }
     const msgWithReactions = message as MessageWithReactions;
     if (!msgWithReactions.hasReaction) {
@@ -912,6 +1432,11 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async getChatLabels(chatId: string): Promise<Label[]> {
     this.ensureReady();
+    if (isChannelJid(chatId)) {
+      // A channel resolves to a wwebjs `Channel`, which has no getLabels() and carries no chat labels.
+      // Return empty instead of letting the unguarded call throw a TypeError (HTTP 500).
+      return [];
+    }
     const chat = await this.client!.getChatById(chatId);
     const labels = await (chat as unknown as GroupChat).getLabels();
     if (!labels) {
@@ -927,16 +1452,45 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async addLabelToChat(chatId: string, labelId: string): Promise<void> {
     this.ensureReady();
-    const chat = await this.client!.getChatById(chatId);
-    await (chat as unknown as GroupChat).addLabel(labelId);
-    this.logger.log(`Added label ${labelId} to chat ${chatId}`);
+    await this.changeChatLabel(chatId, labelId, true);
   }
 
   async removeLabelFromChat(chatId: string, labelId: string): Promise<void> {
     this.ensureReady();
-    const chat = await this.client!.getChatById(chatId);
-    await (chat as unknown as GroupChat).removeLabel(labelId);
-    this.logger.log(`Removed label ${labelId} from chat ${chatId}`);
+    await this.changeChatLabel(chatId, labelId, false);
+  }
+
+  /**
+   * whatsapp-web.js has no add-/remove-one-label primitive: `client.addOrRemoveLabels(ids, chats)` REPLACES
+   * a chat's label set with `ids` (adding the listed labels, removing any existing label not listed). So
+   * toggle a single label by reading the current set, mutating it, and writing the whole set back.
+   * Labels are a WhatsApp Business feature — the write throws `[LT01]` on a personal account; channels
+   * carry no labels at all. Both are surfaced as a 422 rather than an opaque 500.
+   *
+   * The read and write are separate calls, so two concurrent single-label writes to the SAME chat can
+   * lose an update (last write wins, as a full-set replace). Acceptable for low-frequency label admin;
+   * serialize per (sessionId, chatId) if that ever becomes a real workload.
+   */
+  private async changeChatLabel(chatId: string, labelId: string, add: boolean): Promise<void> {
+    if (isChannelJid(chatId)) {
+      throw new ChatLabelsUnsupportedError('Channels do not support chat labels.');
+    }
+    const ids = new Set((await this.getChatLabels(chatId)).map(label => label.id));
+    if (add) {
+      ids.add(labelId);
+    } else {
+      ids.delete(labelId);
+    }
+    try {
+      await this.client!.addOrRemoveLabels([...ids], [chatId]);
+    } catch (error) {
+      // whatsapp-web.js throws `[LT01] Only Whatsapp business` from the page context on a personal account.
+      if (String(error instanceof Error ? error.message : error).includes('LT01')) {
+        throw new ChatLabelsUnsupportedError();
+      }
+      throw error;
+    }
+    this.logger.log(`${add ? 'Added' : 'Removed'} label ${labelId} ${add ? 'to' : 'from'} chat ${chatId}`);
   }
 
   // Channels/Newsletter (Phase 3)
@@ -958,23 +1512,9 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async getChannelById(channelId: string): Promise<Channel | null> {
     this.ensureReady();
-    try {
-      const ch = await (this.client as unknown as BusinessClient).getChannelById(channelId);
-      if (!ch) {
-        return null;
-      }
-      return {
-        id: String(typeof ch.id === 'object' ? ch.id._serialized : ch.id),
-        name: String(ch.name || ''),
-        description: ch.description ? String(ch.description) : undefined,
-        inviteCode: ch.inviteCode ? String(ch.inviteCode) : undefined,
-        subscriberCount: ch.subscriberCount ? Number(ch.subscriberCount) : undefined,
-        verified: ch.verified ? Boolean(ch.verified) : undefined,
-      };
-    } catch (error) {
-      this.logger.warn(`Failed to get channel: ${channelId}`, String(error));
-      return null;
-    }
+    // wwebjs 1.34.x exposes no client.getChannelById; resolve from the subscribed-channel list (#625).
+    const channels = await this.getSubscribedChannels();
+    return channels.find(c => c.id === channelId) ?? null;
   }
 
   async subscribeToChannel(inviteCode: string): Promise<Channel> {
@@ -996,26 +1536,24 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async getChannelMessages(channelId: string, limit: number = 50): Promise<ChannelMessage[]> {
     this.ensureReady();
-    try {
-      const ch = await (this.client as unknown as BusinessClient).getChannelById(channelId);
-      if (!ch) {
-        throw new Error(`Channel ${channelId} not found`);
-      }
-      const messages = await ch.fetchMessages({ limit });
-      if (!messages) {
-        return [];
-      }
-      return messages.map(msg => ({
-        id: String(typeof msg.id === 'object' ? msg.id._serialized : msg.id),
-        body: String(msg.body || ''),
-        timestamp: Number(msg.timestamp),
-        hasMedia: Boolean(msg.hasMedia),
-        mediaUrl: msg.mediaUrl ? String(msg.mediaUrl) : undefined,
-      }));
-    } catch (error) {
-      this.logger.error(`Failed to get channel messages: ${String(error)}`);
-      return [];
+    // wwebjs 1.34.x has no client.getChannelById (calling it threw and the error was swallowed into an
+    // empty list, #625). The subscribed Channel instances returned by getChannels() carry fetchMessages(),
+    // so resolve the channel from that list and read its messages. A missing channel surfaces as a
+    // ChannelNotFoundError (→ 404, like getChannelById) so callers can tell "no messages" apart from
+    // "wrong/unsubscribed channel" instead of getting a silent [].
+    const channels = await (this.client as unknown as BusinessClient).getChannels();
+    const channel = channels?.find(c => (typeof c.id === 'object' ? c.id._serialized : c.id) === channelId);
+    if (!channel) {
+      throw new ChannelNotFoundError(channelId);
     }
+    const messages = await channel.fetchMessages({ limit });
+    return (messages ?? []).map(msg => ({
+      id: String(typeof msg.id === 'object' ? msg.id._serialized : msg.id),
+      body: String(msg.body || ''),
+      timestamp: Number(msg.timestamp),
+      hasMedia: Boolean(msg.hasMedia),
+      mediaUrl: msg.mediaUrl ? String(msg.mediaUrl) : undefined,
+    }));
   }
 
   // ========== Gap Quick Wins Implementation ==========
@@ -1035,16 +1573,32 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       out.chatId = chatId;
       out.isGroup = chatId.endsWith('@g.us');
       out.isStatusBroadcast = chatId === 'status@broadcast';
+      const call = extractWwebjsCall(msg);
+      if (call) out.call = call;
+      // Mirror the live handler's location + quoted-message enrichment so history renders identically —
+      // buildIncomingMessageBase sets type='location' but no coordinates, and never resolves quotes.
+      if (msg.type === MessageTypes.LOCATION && msg.location) {
+        out.location = {
+          latitude: Number(msg.location.latitude),
+          longitude: Number(msg.location.longitude),
+          description: msg.location.description || undefined,
+          address: msg.location.address || undefined,
+          url: msg.location.url || undefined,
+        };
+      }
+      if (msg.hasQuotedMsg) {
+        try {
+          const quoted = await msg.getQuotedMessage();
+          out.quotedMessage = { id: quoted.id._serialized, body: quoted.body };
+        } catch (error) {
+          this.logger.warn(`Failed to resolve quoted message for ${msg.id._serialized}: ${String(error)}`);
+        }
+      }
       if (includeMedia && msg.hasMedia) {
         try {
-          const media = await msg.downloadMedia();
-          if (media) {
-            out.media = {
-              mimetype: media.mimetype,
-              filename: media.filename || undefined,
-              data: media.data,
-            };
-          }
+          // Same pre-gate + limiter as live media: a large historical blob shouldn't bloat the response/heap.
+          const capped = await this.capInboundMediaFor(msg);
+          if (capped) out.media = capped;
         } catch (error) {
           this.logger.warn(`Failed to download media for ${msg.id._serialized}: ${String(error)}`);
         }
@@ -1057,11 +1611,14 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   // Delete Message
   async deleteMessage(chatId: string, messageId: string, forEveryone: boolean = true): Promise<void> {
     this.ensureReady();
+    // NOTE: do NOT resolve chatId to @lid here — delete operates on the found message's own key, not
+    // this chatId, so LID-resolving the lookup gives no benefit and would miss a message stored under
+    // the pre-migration @c.us chat (#583 R1 review).
     const chat = await this.client!.getChatById(chatId);
     const messages = await chat.fetchMessages({ limit: 100 });
     const message = messages.find(m => m.id._serialized === messageId || m.id.id === messageId);
     if (!message) {
-      throw new Error(`Message ${messageId} not found in chat ${chatId}`);
+      throw new MessageNotFoundError(messageId, chatId);
     }
     await message.delete(forEveryone);
     this.logger.log(`Deleted message ${messageId} from chat ${chatId} (forEveryone: ${forEveryone})`);
@@ -1137,26 +1694,26 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     return [];
   }
 
-  async postTextStatus(_text: string, _options?: TextStatusOptions): Promise<StatusResult> {
+  async postTextStatus(_text: string, _options?: StatusPostOptions): Promise<StatusResult> {
     this.ensureReady();
     // whatsapp-web.js doesn't have native status posting
     // This would require using the underlying WhatsApp Web API directly
-    throw new Error('postTextStatus not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('postTextStatus (Baileys-only; wwebjs blocked upstream, see #455)');
   }
 
-  async postImageStatus(_media: MediaInput, _caption?: string): Promise<StatusResult> {
+  async postImageStatus(_media: MediaInput, _options?: StatusPostOptions): Promise<StatusResult> {
     this.ensureReady();
-    throw new Error('postImageStatus not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('postImageStatus (Baileys-only; wwebjs blocked upstream, see #455)');
   }
 
-  async postVideoStatus(_media: MediaInput, _caption?: string): Promise<StatusResult> {
+  async postVideoStatus(_media: MediaInput, _options?: StatusPostOptions): Promise<StatusResult> {
     this.ensureReady();
-    throw new Error('postVideoStatus not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('postVideoStatus (Baileys-only; wwebjs blocked upstream, see #455)');
   }
 
   async deleteStatus(_statusId: string): Promise<void> {
     this.ensureReady();
-    throw new Error('deleteStatus not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('deleteStatus');
   }
 
   // ========== Catalog (Phase 3) ==========
@@ -1185,12 +1742,12 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async sendProduct(_chatId: string, _productId: string, _body?: string): Promise<MessageResult> {
     this.ensureReady();
-    throw new Error('sendProduct not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('sendProduct');
   }
 
   async sendCatalog(_chatId: string, _body?: string): Promise<MessageResult> {
     this.ensureReady();
-    throw new Error('sendCatalog not yet implemented in whatsapp-web.js adapter');
+    throw new EngineNotSupportedError('sendCatalog');
   }
 
   /* eslint-enable @typescript-eslint/require-await, @typescript-eslint/no-unused-vars */
@@ -1198,16 +1755,36 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   async getChats(): Promise<ChatSummary[]> {
     this.ensureReady();
     const chats = await this.client!.getChats();
+    const summaries: ChatSummary[] = [];
+    let skipped = 0;
+
     // Map the raw whatsapp-web.js chat objects to the library-agnostic ChatSummary
-    // shape so that no library types leak past the engine boundary.
-    return chats.map(chat => ({
-      id: chat.id._serialized,
-      name: chat.name,
-      isGroup: chat.isGroup,
-      unreadCount: chat.unreadCount,
-      timestamp: chat.timestamp,
-      lastMessage: chat.lastMessage?.body || undefined,
-    }));
+    // shape so that no library types leak past the engine boundary. Some WA system
+    // or channel-like entries can lack the normal serialized id; skip those instead
+    // of failing the whole dashboard chats request.
+    for (const chat of chats) {
+      const id = chat.id?._serialized;
+      if (!id) {
+        skipped++;
+        continue;
+      }
+
+      summaries.push({
+        id,
+        name: chat.name || id,
+        isGroup: Boolean(chat.isGroup),
+        unreadCount: chat.unreadCount || 0,
+        timestamp: chat.timestamp || 0,
+        // A location message's body is the base64 map thumbnail; don't surface it as the chat preview.
+        lastMessage: chat.lastMessage?.type === MessageTypes.LOCATION ? '📍' : chat.lastMessage?.body || undefined,
+      });
+    }
+
+    if (skipped > 0) {
+      this.logger.warn(`Skipped ${skipped} chat(s) without a serialized id`);
+    }
+
+    return summaries;
   }
 
   async sendSeen(chatId: string): Promise<boolean> {
@@ -1221,8 +1798,31 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     }
   }
 
+  async markUnread(chatId: string): Promise<boolean> {
+    this.ensureReady();
+    if (isChannelJid(chatId)) {
+      // A channel resolves to a wwebjs `Channel`, which has no markUnread() — there is no unread
+      // state to toggle on a channel. Report the no-op rather than throwing a TypeError.
+      return false;
+    }
+    try {
+      const chat = await this.client!.getChatById(chatId);
+      // Chat.markUnread() resolves void, so synthesize the boolean from a clean call.
+      await chat.markUnread();
+      return true;
+    } catch (error) {
+      this.logger.error(`Error marking chat ${chatId} as unread`, String(error));
+      return false;
+    }
+  }
+
   async deleteChat(chatId: string): Promise<boolean> {
     this.ensureReady();
+    if (isChannelJid(chatId)) {
+      // A channel resolves to a wwebjs `Channel`, which has no delete() (only the destructive
+      // deleteChannel()); a generic chat-delete must not silently unsubscribe a channel.
+      return false;
+    }
     try {
       const chat = await this.client!.getChatById(chatId);
       return await chat.delete();
@@ -1234,8 +1834,14 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async sendChatState(chatId: string, state: ChatState): Promise<void> {
     this.ensureReady();
+    if (isChannelJid(chatId)) {
+      // A channel resolves to a wwebjs `Channel`, which has no presence methods
+      // (sendStateTyping/sendStateRecording/clearState). Presence is best-effort, so no-op.
+      return;
+    }
     try {
-      const chat = await this.client!.getChatById(chatId);
+      const to = await this.resolveSendId(chatId);
+      const chat = await this.client!.getChatById(to);
       if (state === 'typing') {
         await chat.sendStateTyping();
       } else if (state === 'recording') {
@@ -1244,8 +1850,10 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         await chat.clearState();
       }
     } catch (error) {
-      // Presence is best-effort — a failure here must never break the surrounding send.
-      this.logger.error(`Error setting chat state '${state}' for ${chatId}`, String(error));
+      // Presence is best-effort and already swallowed here — it never breaks the surrounding send —
+      // so log at WARN, not ERROR: a migrated contact routinely yields `No LID for user` on the
+      // presence path and an ERROR line reads as a fault when nothing actually failed (#582).
+      this.logger.warn(`Could not set chat state '${state}' for ${chatId} (best-effort)`, { error: String(error) });
     }
   }
 

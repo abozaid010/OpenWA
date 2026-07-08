@@ -31,7 +31,7 @@ describe('BaileysMessageStoreService', () => {
       type: 'sqlite',
       database: ':memory:',
       // Session must be present so the @ManyToOne relation metadata resolves and synchronize
-      // can emit the CASCADE FK on the baileys_stored_messages table (I6).
+      // can emit the CASCADE FK on the baileys_stored_messages table.
       entities: [BaileysStoredMessage, Session],
       synchronize: true,
     });
@@ -75,7 +75,7 @@ describe('BaileysMessageStoreService', () => {
   });
 
   /**
-   * C1 regression test — drives eviction through the REAL put() path so the stored
+   * Regression test — drives eviction through the REAL put() path so the stored
    * createdAt value comes from the upsert payload (millisecond precision), not from
    * SQLite's datetime('now') (second precision). Without the `createdAt: new Date()`
    * fix in put(), the string comparison '…:XX' < '…:XX.000' evaluates TRUE for every
@@ -84,15 +84,18 @@ describe('BaileysMessageStoreService', () => {
    * This test MUST FAIL against the old code (no explicit createdAt in upsert) and
    * PASS with the fix.
    */
-  it('eviction via put() keeps exactly the cap — never wipes the store (C1)', async () => {
+  it('eviction via put() keeps exactly the cap — never wipes the store', async () => {
     process.env.BAILEYS_MESSAGE_STORE_LIMIT = '3';
     await seedSession('s_c1');
     const s = new BaileysMessageStoreService(repo);
 
     // Insert 6 messages via put() — each call sets createdAt: new Date(), so even within the
-    // same wall-clock second the stored values carry millisecond precision.
+    // same wall-clock second the stored values carry millisecond precision. A 2ms gap guarantees
+    // each createdAt is a distinct millisecond, so the (createdAt, id) eviction order is
+    // deterministic and the survivor assertions below don't race the random-UUID tiebreaker.
     for (let i = 1; i <= 6; i++) {
       await s.put('s_c1', msg(`C${i}`));
+      await new Promise(r => setTimeout(r, 2));
     }
 
     const count = await repo.count({ where: { sessionId: 's_c1' } });
@@ -149,6 +152,25 @@ describe('BaileysMessageStoreService', () => {
     expect(await repo.count({ where: { sessionId: 's2' } })).toBe(2);
     // T4 is the newest (distinct createdAt = now) and must survive.
     expect(await s.getMessage('s2', 'T4')).not.toBeNull();
+  });
+
+  // Issue #319 — an orphaned adapter (its session was deleted/recreated during reconnect
+  // churn) keeps receiving messages.upsert and calls put() under a sessionId that no longer
+  // has a parent row. The FK then fails (SQLITE_CONSTRAINT in prod) on EVERY message, the
+  // store stays empty, and reply/forward/react/delete-by-id can never resolve the message.
+  // put() must tolerate the absent parent — skip the write instead of throwing per message.
+  it('skips persisting (no throw) when the parent session row is absent (orphaned adapter; #319)', async () => {
+    await ds.query('PRAGMA foreign_keys = ON'); // faithfully reproduce production FK enforcement
+    // No seedSession('orphan') — the parent is gone.
+    await expect(service.put('orphan', msg('M1'))).resolves.toBeUndefined();
+    expect(await repo.count({ where: { sessionId: 'orphan' } })).toBe(0);
+  });
+
+  it('still rethrows a non-FK persistence error (does not swallow real failures)', async () => {
+    await seedSession('s1');
+    const boom = Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' });
+    jest.spyOn(repo, 'upsert').mockRejectedValueOnce(boom);
+    await expect(service.put('s1', msg('M1'))).rejects.toThrow('disk full');
   });
 
   it('clearSession removes only that session', async () => {

@@ -1,9 +1,12 @@
 import { Injectable, NotFoundException, UnauthorizedException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { createHash, randomBytes } from 'crypto';
-import { existsSync, writeFileSync, readFileSync } from 'fs';
+import { randomBytes } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { writeSecretFile } from '../../common/utils/secret-file';
+import { ipMatches } from '../../common/utils/ip';
+import { hashApiKey } from './api-key-hash';
 import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 import { CreateApiKeyDto, UpdateApiKeyDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
@@ -25,6 +28,19 @@ export function resolveSeedApiKey(): string {
     return 'dev-admin-key';
   }
   return `owa_k1_${randomBytes(32).toString('hex')}`;
+}
+
+/**
+ * The line to print for the API key in the startup banner. The full raw key is shown ONLY when it was
+ * just created (first run, when the operator needs to capture it once). On every subsequent boot the
+ * key is masked to a short non-secret fingerprint, so the live admin key is not re-written to the log
+ * pipeline (Docker/Loki/CloudWatch) on each restart — it stays in `data/.api-key` (0600) and the
+ * dashboard. A placeholder (e.g. "(check dashboard for keys)") is passed through unchanged.
+ */
+export function bannerKeyLine(displayKey: string, isNewKey: boolean): string {
+  if (isNewKey) return displayKey;
+  if (displayKey.startsWith('(')) return displayKey;
+  return `${displayKey.slice(0, 8)}… (full key in data/.api-key or the dashboard)`;
 }
 
 @Injectable()
@@ -53,9 +69,9 @@ export class AuthService implements OnModuleInit {
       await this.seedApiKey(displayKey, 'Default Admin Key', ApiKeyRole.ADMIN);
       isNewKey = true;
 
-      // Save raw key to file for startup script to read
+      // Save raw key to file for startup script to read (owner-only — it's the raw admin key).
       try {
-        writeFileSync(API_KEY_FILE, displayKey, 'utf-8');
+        writeSecretFile(API_KEY_FILE, displayKey);
       } catch (err) {
         this.logger.warn('Could not save API key file', { error: String(err) });
       }
@@ -91,7 +107,7 @@ export class AuthService implements OnModuleInit {
     } else {
       this.logger.log('  🔑 API Key:');
     }
-    this.logger.log(`     ${displayKey}`);
+    this.logger.log(`     ${bannerKeyLine(displayKey, isNewKey)}`);
     this.logger.log('');
     this.logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     this.logger.log('');
@@ -243,60 +259,14 @@ export class AuthService implements OnModuleInit {
   }
 
   private hashKey(rawKey: string): string {
-    return createHash('sha256').update(rawKey).digest('hex');
+    return hashApiKey(rawKey, process.env.API_KEY_PEPPER);
   }
 
   private isIpAllowed(clientIp: string, allowedIps: string[]): boolean {
-    // Support both exact match and CIDR notation
-    for (const entry of allowedIps) {
-      if (entry.includes('/')) {
-        // CIDR notation (e.g., "10.0.0.0/24")
-        if (this.ipInCidr(clientIp, entry)) {
-          return true;
-        }
-      } else {
-        // Exact match
-        if (clientIp === entry) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Check if an IPv4 address is within a CIDR range
-   * @param ip - Client IP address (e.g., "192.168.1.100")
-   * @param cidr - CIDR notation (e.g., "192.168.1.0/24")
-   */
-  private ipInCidr(ip: string, cidr: string): boolean {
-    try {
-      const [range, bitsStr] = cidr.split('/');
-      const bits = parseInt(bitsStr, 10);
-
-      if (isNaN(bits) || bits < 0 || bits > 32) {
-        return false;
-      }
-
-      const mask = ~(2 ** (32 - bits) - 1);
-      const ipNum = this.ipToNumber(ip);
-      const rangeNum = this.ipToNumber(range);
-
-      return (ipNum & mask) === (rangeNum & mask);
-    } catch (error) {
-      this.logger.warn(`Invalid CIDR format: ${cidr}`, { error: String(error) });
-      return false;
-    }
-  }
-
-  /**
-   * Convert IPv4 address string to 32-bit number
-   */
-  private ipToNumber(ip: string): number {
-    const parts = ip.split('.');
-    if (parts.length !== 4) return 0;
-
-    return parts.reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+    // Delegate to the shared, hardened matcher (also used by the throttler and the API-key guard's IP
+    // resolution): it handles both an exact IP entry and CIDR notation, and — unlike the previous local
+    // parser — rejects a malformed octet instead of coercing it into range.
+    return allowedIps.some(entry => ipMatches(clientIp, entry));
   }
 
   hasPermission(apiKey: ApiKey, requiredRole: ApiKeyRole): boolean {

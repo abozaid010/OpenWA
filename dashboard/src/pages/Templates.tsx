@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Check, Copy, Edit, FileText, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, Copy, FileText, Loader2, Plus, Search, Trash2, X } from 'lucide-react';
 import { type MessageTemplate, type TemplatePayload } from '../services/api';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useRole } from '../hooks/useRole';
@@ -61,6 +61,7 @@ export function Templates() {
   const [deleteTarget, setDeleteTarget] = useState<MessageTemplate | null>(null);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [previewValues, setPreviewValues] = useState<Record<string, string>>({});
+  const [searchTerm, setSearchTerm] = useState('');
 
   const { data: templates = [], isLoading: loadingTemplates } = useTemplatesQuery(selectedSessionId, !!selectedSessionId);
   const createMutation = useCreateTemplateMutation();
@@ -70,6 +71,15 @@ export function Templates() {
   const selectedSession = sessions.find(session => session.id === selectedSessionId);
   const placeholders = useMemo(() => extractPlaceholders(form), [form]);
   const preview = useMemo(() => renderPreview(form, previewValues), [form, previewValues]);
+  const filteredTemplates = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return templates;
+    return templates.filter(template =>
+      [template.name, template.header, template.body, template.footer]
+        .filter(Boolean)
+        .some(value => value!.toLowerCase().includes(query)),
+    );
+  }, [searchTerm, templates]);
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
   useEffect(() => {
@@ -212,18 +222,97 @@ export function Templates() {
           <p>{t('templates.empty.noSessionsDesc')}</p>
         </div>
       ) : (
-        <div className="templates-grid">
+        <div className="templates-workspace">
+          <aside className="templates-library">
+            <div className="templates-library-header">
+              <div>
+                <h2>{t('templates.savedTitle')}</h2>
+                <span>{t('templates.count', { count: templates.length })}</span>
+              </div>
+              <button className="btn-primary templates-new-btn" onClick={resetForm} disabled={!canWrite}>
+                <Plus size={16} />
+                {t('templates.newTemplate')}
+              </button>
+            </div>
+
+            <div className="templates-search">
+              <Search size={16} />
+              <input
+                value={searchTerm}
+                onChange={event => setSearchTerm(event.target.value)}
+                placeholder={t('common.search')}
+              />
+            </div>
+
+            {loadingTemplates ? (
+              <div className="templates-loading-inline">
+                <Loader2 className="animate-spin" size={24} />
+              </div>
+            ) : templates.length === 0 ? (
+              <div className="templates-empty-list">
+                <FileText size={40} strokeWidth={1} />
+                <h3>{t('templates.empty.title')}</h3>
+                <p>{t('templates.empty.description')}</p>
+              </div>
+            ) : filteredTemplates.length === 0 ? (
+              <div className="templates-empty-list compact">
+                <Search size={32} strokeWidth={1.5} />
+                <h3>{t('templates.empty.title')}</h3>
+              </div>
+            ) : (
+              <div className="template-list" role="list">
+                {filteredTemplates.map(template => {
+                  const templatePlaceholders = extractPlaceholders(template);
+                  const isSelected = editingTemplate?.id === template.id;
+                  return (
+                    <button
+                      key={template.id}
+                      className={`template-list-item ${isSelected ? 'selected' : ''}`}
+                      onClick={() => openEdit(template)}
+                      type="button"
+                    >
+                      <span className="template-list-title">{template.name}</span>
+                      <span className="template-list-body">{template.body}</span>
+                      <span className="template-list-meta">
+                        {templatePlaceholders.length > 0
+                          ? templatePlaceholders.map(key => `{{${key}}}`).join(' ')
+                          : t('templates.noPlaceholders')}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </aside>
+
           <section className="template-editor">
             <div className="template-editor-header">
               <div>
                 <h2>{editingTemplate ? t('templates.editTitle') : t('templates.createTitle')}</h2>
                 <p>{selectedSession ? t('templates.sessionHint', { name: selectedSession.name }) : ''}</p>
               </div>
-              {editingTemplate && (
-                <button className="btn-secondary" onClick={resetForm}>
-                  {t('templates.newTemplate')}
-                </button>
-              )}
+              <div className="template-header-actions">
+                {editingTemplate && (
+                  <button
+                    className="icon-btn"
+                    title={t('templates.actions.copyName')}
+                    onClick={() => void copyName(editingTemplate.name)}
+                    type="button"
+                  >
+                    <Copy size={16} />
+                  </button>
+                )}
+                {editingTemplate && canWrite && (
+                  <button
+                    className="icon-btn danger"
+                    title={t('common.delete')}
+                    onClick={() => setDeleteTarget(editingTemplate)}
+                    type="button"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="template-form">
@@ -237,45 +326,48 @@ export function Templates() {
                 />
               </div>
 
-              <div className="form-group">
-                <label>{t('templates.header')}</label>
-                <input
-                  value={form.header}
-                  onChange={event => setForm({ ...form, header: event.target.value })}
-                  placeholder={t('templates.headerPlaceholder')}
-                  disabled={!canWrite}
-                />
-              </div>
+              <div className="template-message-fields">
+                <div className="form-group">
+                  <label>{t('templates.header')}</label>
+                  <input
+                    value={form.header}
+                    onChange={event => setForm({ ...form, header: event.target.value })}
+                    placeholder={t('templates.headerPlaceholder')}
+                    disabled={!canWrite}
+                  />
+                </div>
 
-              <div className="form-group">
-                <label>{t('templates.body')}</label>
-                <textarea
-                  value={form.body}
-                  onChange={event => setForm({ ...form, body: event.target.value })}
-                  placeholder={t('templates.bodyPlaceholder')}
-                  rows={8}
-                  disabled={!canWrite}
-                />
-              </div>
+                <div className="form-group body-field">
+                  <label>{t('templates.body')}</label>
+                  <textarea
+                    value={form.body}
+                    onChange={event => setForm({ ...form, body: event.target.value })}
+                    placeholder={t('templates.bodyPlaceholder')}
+                    rows={10}
+                    disabled={!canWrite}
+                  />
+                </div>
 
-              <div className="form-group">
-                <label>{t('templates.footer')}</label>
-                <input
-                  value={form.footer}
-                  onChange={event => setForm({ ...form, footer: event.target.value })}
-                  placeholder={t('templates.footerPlaceholder')}
-                  disabled={!canWrite}
-                />
+                <div className="form-group">
+                  <label>{t('templates.footer')}</label>
+                  <input
+                    value={form.footer}
+                    onChange={event => setForm({ ...form, footer: event.target.value })}
+                    placeholder={t('templates.footerPlaceholder')}
+                    disabled={!canWrite}
+                  />
+                </div>
               </div>
 
               <div className="template-editor-actions">
-                <button className="btn-secondary" onClick={resetForm} disabled={isSaving}>
+                <button className="btn-secondary" onClick={resetForm} disabled={isSaving} type="button">
                   {t('common.cancel')}
                 </button>
                 <button
                   className="btn-primary"
                   onClick={handleSave}
                   disabled={!canWrite || isSaving || !selectedSessionId || !form.name.trim() || !form.body.trim()}
+                  type="button"
                 >
                   {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
                   {canWrite ? t(editingTemplate ? 'templates.saveChanges' : 'templates.createTemplate') : t('templates.viewOnly')}
@@ -285,88 +377,32 @@ export function Templates() {
           </section>
 
           <aside className="template-preview">
-            <h2>{t('templates.previewTitle')}</h2>
-            {placeholders.length > 0 ? (
-              <div className="placeholder-list">
-                {placeholders.map(key => (
-                  <label key={key}>
-                    <span>{`{{${key}}}`}</span>
-                    <input
-                      value={previewValues[key] || ''}
-                      onChange={event => setPreviewValues({ ...previewValues, [key]: event.target.value })}
-                      placeholder={t('templates.previewValuePlaceholder')}
-                    />
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <p className="template-muted">{t('templates.noPlaceholders')}</p>
-            )}
-            <pre className="template-preview-box">{preview || t('templates.previewEmpty')}</pre>
-          </aside>
-
-          <section className="templates-list">
-            <div className="templates-list-header">
-              <h2>{t('templates.savedTitle')}</h2>
-              <span>{t('templates.count', { count: templates.length })}</span>
+            <div className="template-preview-header">
+              <h2>{t('templates.previewTitle')}</h2>
+              <span>{placeholders.length}</span>
             </div>
-
-            {loadingTemplates ? (
-              <div className="templates-loading-inline">
-                <Loader2 className="animate-spin" size={24} />
-              </div>
-            ) : templates.length === 0 ? (
-              <div className="templates-empty-list">
-                <FileText size={40} strokeWidth={1} />
-                <h3>{t('templates.empty.title')}</h3>
-                <p>{t('templates.empty.description')}</p>
-              </div>
-            ) : (
-              <div className="template-card-list">
-                {templates.map(template => {
-                  const templatePlaceholders = extractPlaceholders(template);
-                  return (
-                    <article key={template.id} className="template-card">
-                      <div className="template-card-main">
-                        <div className="template-card-title-row">
-                          <h3>{template.name}</h3>
-                          <button
-                            className="icon-btn"
-                            title={t('templates.actions.copyName')}
-                            onClick={() => void copyName(template.name)}
-                          >
-                            <Copy size={16} />
-                          </button>
-                        </div>
-                        <p>{template.body}</p>
-                        {templatePlaceholders.length > 0 && (
-                          <div className="template-placeholder-tags">
-                            {templatePlaceholders.map(key => (
-                              <span key={key}>{`{{${key}}}`}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="template-card-actions">
-                        <button className="icon-btn" title={t('common.edit')} onClick={() => openEdit(template)}>
-                          <Edit size={16} />
-                        </button>
-                        {canWrite && (
-                          <button
-                            className="icon-btn danger"
-                            title={t('common.delete')}
-                            onClick={() => setDeleteTarget(template)}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+            <div className="template-preview-message">
+              <pre>{preview || t('templates.previewEmpty')}</pre>
+            </div>
+            <div className="template-variable-panel">
+              {placeholders.length > 0 ? (
+                <div className="placeholder-list">
+                  {placeholders.map(key => (
+                    <label key={key}>
+                      <span>{`{{${key}}}`}</span>
+                      <input
+                        value={previewValues[key] || ''}
+                        onChange={event => setPreviewValues({ ...previewValues, [key]: event.target.value })}
+                        placeholder={t('templates.previewValuePlaceholder')}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p className="template-muted">{t('templates.noPlaceholders')}</p>
+              )}
+            </div>
+          </aside>
         </div>
       )}
 

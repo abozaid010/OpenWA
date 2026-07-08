@@ -1,4 +1,5 @@
 import type { WAMessage } from '@whiskeysockets/baileys';
+import type { LidMappingStore } from '../identity/lid-mapping-store.service';
 
 /**
  * Persistence boundary for the Baileys engine's message store. The adapter depends on this narrow
@@ -25,6 +26,8 @@ export interface BaileysAdapterConfig {
   proxyType?: 'http' | 'https' | 'socks4' | 'socks5';
   /** Persisted store for reply/forward/react/delete. Provided by the plugin; the four ops require it. */
   messageStore?: BaileysMessageStore;
+  /** Persisted, cross-session lid->phone resolution table. Backs lid resolution beyond the in-memory map. */
+  lidMappingStore?: LidMappingStore;
 }
 
 /**

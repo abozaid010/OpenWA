@@ -2,8 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UnauthorizedException, NotFoundException } from '@nestjs/common';
-import { createHash } from 'crypto';
-import { AuthService, resolveSeedApiKey } from './auth.service';
+import { createHash, createHmac } from 'crypto';
+import { AuthService, resolveSeedApiKey, bannerKeyLine } from './auth.service';
 import { ApiKey, ApiKeyRole } from './entities/api-key.entity';
 
 // Helpers
@@ -59,6 +59,25 @@ describe('resolveSeedApiKey (first-boot default admin key)', () => {
     process.env.API_MASTER_KEY = 'master-wins';
     process.env.ALLOW_DEV_API_KEY = 'true';
     expect(resolveSeedApiKey()).toBe('master-wins');
+  });
+});
+
+describe('bannerKeyLine (startup banner key masking)', () => {
+  const FULL = 'owa_k1_0123456789abcdef0123456789abcdef';
+
+  it('prints the full key only when it was just created', () => {
+    expect(bannerKeyLine(FULL, true)).toBe(FULL);
+  });
+
+  it('masks the key on subsequent boots — the full secret is never re-logged', () => {
+    const line = bannerKeyLine(FULL, false);
+    expect(line).not.toContain('0123456789abcdef'); // the secret tail must not appear
+    expect(line.startsWith('owa_k1_0')).toBe(true); // a short fingerprint is fine
+    expect(line).toMatch(/data\/\.api-key|dashboard/); // points the operator to the real source
+  });
+
+  it('passes a placeholder through unchanged', () => {
+    expect(bannerKeyLine('(check dashboard for keys)', false)).toBe('(check dashboard for keys)');
   });
 });
 
@@ -305,6 +324,18 @@ describe('AuthService', () => {
       await expect(service.validateApiKey('ip-no-client')).rejects.toThrow('Client IP could not be determined');
     });
 
+    it('rejects a malformed client IP instead of coercing it into an allowed range', async () => {
+      const key = createMockApiKey({
+        allowedIps: ['10.0.0.1/32'],
+        keyHash: hashKey('ip-malformed'),
+      });
+      (repository.findOne as jest.Mock).mockResolvedValue(key);
+
+      // The previous lenient parser read '10.0.0.1abc' as 10.0.0.1 and let it through; the shared
+      // hardened matcher rejects a non-numeric octet, so the per-key whitelist holds.
+      await expect(service.validateApiKey('ip-malformed', '10.0.0.1abc')).rejects.toThrow('IP address not allowed');
+    });
+
     it('should throw UnauthorizedException when session not in allowedSessions', async () => {
       const key = createMockApiKey({
         allowedSessions: ['session-A'],
@@ -405,6 +436,37 @@ describe('AuthService', () => {
       // CIDR match
       const r2 = await service.validateApiKey('mixed', '192.168.50.1');
       expect(r2.id).toBe(key.id);
+    });
+  });
+
+  // ── API_KEY_PEPPER wiring ─────────────────────────────────────────
+  // Proves the service's hashing path actually reads the env var (not just the pure helper). We
+  // assert on the keyHash the service QUERIES findOne with, since the mock returns regardless.
+  describe('hashKey reads API_KEY_PEPPER', () => {
+    const ORIGINAL_ENV = process.env;
+    afterEach(() => {
+      process.env = ORIGINAL_ENV;
+    });
+
+    const queriedHash = async (rawKey: string): Promise<string> => {
+      (repository.findOne as jest.Mock).mockResolvedValue(null);
+      await expect(service.validateApiKey(rawKey)).rejects.toThrow(UnauthorizedException);
+      const calls = (repository.findOne as jest.Mock).mock.calls as Array<[{ where: { keyHash: string } }]>;
+      return calls[0][0].where.keyHash;
+    };
+
+    it('hashes with HMAC-SHA256 when the pepper is set', async () => {
+      process.env = { ...ORIGINAL_ENV, API_KEY_PEPPER: 'server-pepper' };
+      const queried = await queriedHash('owa_raw_key');
+      expect(queried).toBe(createHmac('sha256', 'server-pepper').update('owa_raw_key').digest('hex'));
+      expect(queried).not.toBe(createHash('sha256').update('owa_raw_key').digest('hex'));
+    });
+
+    it('hashes with plain SHA-256 when the pepper is unset (existing keys keep validating)', async () => {
+      process.env = { ...ORIGINAL_ENV };
+      delete process.env.API_KEY_PEPPER;
+      const queried = await queriedHash('owa_raw_key');
+      expect(queried).toBe(createHash('sha256').update('owa_raw_key').digest('hex'));
     });
   });
 });

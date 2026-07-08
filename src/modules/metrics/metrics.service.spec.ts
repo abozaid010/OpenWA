@@ -1,7 +1,8 @@
 import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MetricsService } from './metrics.service';
+import { MetricsService, METRICS_RENDER_TTL_MS } from './metrics.service';
 import { StatsService, OverviewStats } from '../stats/stats.service';
+import { getWebhookDeliveryFailuresTotal } from '../../common/metrics/webhook-delivery-metrics';
 
 describe('MetricsService', () => {
   const overview: OverviewStats = {
@@ -57,7 +58,31 @@ describe('MetricsService', () => {
       expect(out).toContain('openwa_messages_failed_total 3');
       // Every metric must declare HELP/TYPE before its sample.
       expect(out).toContain('# TYPE openwa_messages_total counter');
+      // Webhook terminal-failure counter is emitted with correct counter typing + current total.
+      expect(out).toContain('# TYPE openwa_webhook_delivery_failures_total counter');
+      expect(out).toContain(`openwa_webhook_delivery_failures_total ${getWebhookDeliveryFailuresTotal()}`);
       expect(out.endsWith('\n')).toBe(true);
+    });
+
+    it('memoizes the rendered output within the TTL (one getOverview per window)', async () => {
+      jest.useFakeTimers();
+      try {
+        const config = {
+          get: (k: string) => (k === 'METRICS_TOKEN' ? 's3cret' : undefined),
+        } as unknown as ConfigService;
+        const getOverview = jest.fn().mockResolvedValue(overview);
+        const svc = new MetricsService(config, { getOverview } as unknown as StatsService);
+
+        await svc.render();
+        await svc.render();
+        expect(getOverview).toHaveBeenCalledTimes(1); // 2nd scrape served from the memo, no DB work
+
+        jest.advanceTimersByTime(METRICS_RENDER_TTL_MS + 1);
+        await svc.render();
+        expect(getOverview).toHaveBeenCalledTimes(2); // window expired → recomputed
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

@@ -7,8 +7,14 @@ import {
   auditApi,
   infraApi,
   pluginsApi,
+  pluginInstancesApi,
+  statsApi,
   type Webhook,
+  type WebhookFilters,
   type TemplatePayload,
+  type StatsPeriod,
+  type CreateInstanceInput,
+  type UpdateInstanceInput,
 } from '../services/api';
 
 // ── Query Keys ────────────────────────────────────────────────────────
@@ -17,6 +23,7 @@ export const queryKeys = {
   sessions: ['sessions'] as const,
   sessionStats: ['sessions', 'stats'] as const,
   sessionGroups: (sessionId: string) => ['sessions', sessionId, 'groups'] as const,
+  sessionChats: (sessionId: string) => ['sessions', sessionId, 'chats'] as const,
   webhooks: ['webhooks'] as const,
   templates: (sessionId: string) => ['sessions', sessionId, 'templates'] as const,
   apiKeys: ['apiKeys'] as const,
@@ -24,8 +31,11 @@ export const queryKeys = {
     ['logs', params] as const,
   infraStatus: ['infra', 'status'] as const,
   plugins: ['plugins'] as const,
+  pluginInstances: (pluginId: string) => ['plugins', pluginId, 'instances'] as const,
   engines: ['engines'] as const,
   currentEngine: ['engines', 'current'] as const,
+  statsOverview: ['stats', 'overview'] as const,
+  statsMessages: (period: string) => ['stats', 'messages', period] as const,
 };
 
 // ── Session Queries ───────────────────────────────────────────────────
@@ -55,6 +65,15 @@ export function useSessionGroupsQuery(sessionId: string, enabled: boolean) {
   });
 }
 
+export function useSessionChatsQuery(sessionId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.sessionChats(sessionId),
+    queryFn: () => sessionApi.getChats(sessionId),
+    enabled: enabled && !!sessionId,
+    staleTime: 60_000,
+  });
+}
+
 export function useStopSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -72,14 +91,18 @@ export function useWebhooksQuery() {
     queryKey: queryKeys.webhooks,
     queryFn: webhookApi.listAll,
     staleTime: 30_000,
+    // Normalize `events` to an array at the data boundary so every consumer (list render + edit
+    // modal) can trust the declared string[] shape. A malformed payload then renders as no tags
+    // instead of taking down the whole SPA via events.map() in the ErrorBoundary.
+    select: webhooks => webhooks.map(w => ({ ...w, events: Array.isArray(w.events) ? w.events : [] })),
   });
 }
 
 export function useCreateWebhookMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (params: { sessionId: string; url: string; events: string[] }) =>
-      webhookApi.create(params.sessionId, { url: params.url, events: params.events }),
+    mutationFn: (params: { sessionId: string; url: string; events: string[]; filters?: WebhookFilters | null }) =>
+      webhookApi.create(params.sessionId, { url: params.url, events: params.events, filters: params.filters }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
     },
@@ -236,6 +259,56 @@ export function usePluginsQuery() {
   });
 }
 
+export function usePluginInstancesQuery(pluginId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.pluginInstances(pluginId),
+    queryFn: () => pluginInstancesApi.list(pluginId),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateInstanceMutation(pluginId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateInstanceInput) => pluginInstancesApi.create(pluginId, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pluginInstances(pluginId) });
+    },
+  });
+}
+
+export function useRegenerateInstanceSecretMutation(pluginId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => pluginInstancesApi.regenerateSecret(pluginId, instanceId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pluginInstances(pluginId) });
+    },
+  });
+}
+
+export function useUpdateInstanceMutation(pluginId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { instanceId: string; body: UpdateInstanceInput }) =>
+      pluginInstancesApi.update(pluginId, params.instanceId, params.body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pluginInstances(pluginId) });
+    },
+  });
+}
+
+export function useDeleteInstanceMutation(pluginId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => pluginInstancesApi.remove(pluginId, instanceId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pluginInstances(pluginId) });
+    },
+  });
+}
+
 export function useEnginesQuery() {
   return useQuery({
     queryKey: queryKeys.engines,
@@ -249,5 +322,26 @@ export function useCurrentEngineQuery() {
     queryKey: queryKeys.currentEngine,
     queryFn: pluginsApi.getCurrentEngine,
     staleTime: 60_000,
+  });
+}
+
+// ── Stats Queries ─────────────────────────────────────────────────────
+// /stats/* is ADMIN-only; a non-admin key gets 403 → don't retry, let the UI fall back gracefully.
+
+export function useStatsOverviewQuery() {
+  return useQuery({
+    queryKey: queryKeys.statsOverview,
+    queryFn: statsApi.getOverview,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useStatsMessagesQuery(period: StatsPeriod) {
+  return useQuery({
+    queryKey: queryKeys.statsMessages(period),
+    queryFn: () => statsApi.getMessages(period),
+    staleTime: 30_000,
+    retry: false,
   });
 }

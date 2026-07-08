@@ -3,41 +3,83 @@ import {
   IsString,
   IsIn,
   IsArray,
+  IsObject,
   IsOptional,
   IsNumber,
   IsBoolean,
   ValidateNested,
+  MaxLength,
   Min,
   Max,
   ArrayMaxSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-class BulkMessageContentDto {
-  @ApiPropertyOptional({ description: 'Text content for text messages' })
+class BulkMediaDto {
+  @ApiPropertyOptional({ description: 'Media URL (http/https)' })
   @IsOptional()
   @IsString()
+  url?: string;
+
+  @ApiPropertyOptional({ description: 'Base64-encoded media data' })
+  @IsOptional()
+  @IsString()
+  base64?: string;
+
+  @ApiPropertyOptional({ description: 'Media MIME type' })
+  @IsOptional()
+  @IsString()
+  mimetype?: string;
+
+  @ApiPropertyOptional({ description: 'Filename (documents only)' })
+  @IsOptional()
+  @IsString()
+  filename?: string;
+
+  @ApiPropertyOptional({ description: 'Audio only: send as a WhatsApp voice note (PTT)' })
+  @IsOptional()
+  @IsBoolean()
+  ptt?: boolean;
+}
+
+class BulkMessageContentDto {
+  @ApiPropertyOptional({ description: 'Text content for text messages', maxLength: 4096 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(4096)
   text?: string;
 
-  @ApiPropertyOptional({ description: 'Image URL or base64' })
+  // Typed nested DTOs (not bare object literals) so the global ValidationPipe's whitelist /
+  // forbidNonWhitelisted actually reaches their fields — otherwise unknown props inside a media
+  // object pass straight through and are persisted verbatim.
+  @ApiPropertyOptional({ description: 'Image URL or base64', type: BulkMediaDto })
   @IsOptional()
-  image?: { url?: string; base64?: string; mimetype?: string };
+  @ValidateNested()
+  @Type(() => BulkMediaDto)
+  image?: BulkMediaDto;
 
-  @ApiPropertyOptional({ description: 'Video URL or base64' })
+  @ApiPropertyOptional({ description: 'Video URL or base64', type: BulkMediaDto })
   @IsOptional()
-  video?: { url?: string; base64?: string; mimetype?: string };
+  @ValidateNested()
+  @Type(() => BulkMediaDto)
+  video?: BulkMediaDto;
 
-  @ApiPropertyOptional({ description: 'Audio URL or base64' })
+  @ApiPropertyOptional({ description: 'Audio URL or base64', type: BulkMediaDto })
   @IsOptional()
-  audio?: { url?: string; base64?: string; mimetype?: string };
+  @ValidateNested()
+  @Type(() => BulkMediaDto)
+  audio?: BulkMediaDto;
 
-  @ApiPropertyOptional({ description: 'Document URL or base64' })
+  @ApiPropertyOptional({ description: 'Document URL or base64', type: BulkMediaDto })
   @IsOptional()
-  document?: { url?: string; base64?: string; mimetype?: string; filename?: string };
+  @ValidateNested()
+  @Type(() => BulkMediaDto)
+  document?: BulkMediaDto;
 
-  @ApiPropertyOptional({ description: 'Caption for media messages' })
+  @ApiPropertyOptional({ description: 'Caption for media messages', maxLength: 1024 })
   @IsOptional()
   @IsString()
+  @MaxLength(1024)
   caption?: string;
 }
 
@@ -57,6 +99,7 @@ class BulkMessageItemDto {
 
   @ApiPropertyOptional({ description: 'Variables for template substitution' })
   @IsOptional()
+  @IsObject()
   variables?: Record<string, string>;
 }
 

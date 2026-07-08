@@ -107,12 +107,15 @@ Data stored in RAM. Fast but non-persistent. Used for cache in minimal deploymen
 ## J
 
 ### JID (Jabber ID)
-Identifier format in the XMPP protocol used by WhatsApp. Same as Chat ID.
+WhatsApp's id format, inherited from XMPP; the user-facing "Chat ID" is a JID. The same entity can be addressed in more than one dialect: `<phone>@c.us` (whatsapp-web.js, and OpenWA's neutral form), `<phone>@s.whatsapp.net` (Baileys' raw form for the same user), `<id>@g.us` (a group), or `<lid>@lid` (a LID, a privacy id). OpenWA normalizes engine ids to a single neutral dialect at the engine boundary - see *System Architecture > WhatsApp Identity Contract*.
 
 ### Job Queue
 Queueing system for asynchronous task processing. Used for webhook delivery and message scheduling.
 
 ## L
+
+### LID (Linked ID)
+A WhatsApp **privacy identifier** (`<number>@lid`) that addresses a user without exposing their phone number - increasingly used in groups and communities. Its number is **not** a phone number; a separate `lid -> phone` mapping (supplied by WhatsApp via history sync / contacts) resolves it when known. OpenWA keeps an unresolved LID as-is rather than guessing a phone. See *System Architecture > WhatsApp Identity Contract*.
 
 ### Linked Device
 WhatsApp feature that allows up to 4 additional devices to be linked to one account without requiring an active phone connection.

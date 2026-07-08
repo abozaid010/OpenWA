@@ -59,4 +59,30 @@ describe('mapBaileysGroupInfo', () => {
       { id: '628222@s.whatsapp.net', number: '628222', name: undefined, isAdmin: true, isSuperAdmin: false },
     ]);
   });
+
+  it('canonicalizes participant ids and owner through the supplied normalizer (lid -> resolved phone)', () => {
+    // A lid-addressed group: participants/owner arrive as @lid. The normalizer (the adapter's
+    // session-store) resolves the known lid to its phone so both sides of the admin check share a dialect.
+    const m = meta({
+      owner: '111@lid',
+      participants: [
+        { id: '111@lid', admin: 'superadmin' },
+        { id: '222@lid', admin: null },
+      ],
+    });
+    const normalize = (jid: string) => (jid === '111@lid' ? '628111@c.us' : jid);
+    const info = mapBaileysGroupInfo(m, normalize);
+    expect(info.owner).toBe('628111@c.us');
+    expect(info.participants).toEqual([
+      { id: '628111@c.us', number: '628111', name: undefined, isAdmin: true, isSuperAdmin: true },
+      { id: '222@lid', number: '222', name: undefined, isAdmin: false, isSuperAdmin: false }, // unresolved: kept raw
+    ]);
+  });
+
+  it('mapBaileysGroup flags self-admin across the dialect split via the normalizer', () => {
+    const m = meta({ participants: [{ id: '111@lid', admin: 'admin' }] });
+    // Self is reported in the raw protocol dialect; the normalizer folds both onto @c.us so they match.
+    const normalize = (jid: string) => (jid === '111@lid' || jid === '628111@s.whatsapp.net' ? '628111@c.us' : jid);
+    expect(mapBaileysGroup(m, '628111@s.whatsapp.net', normalize).isAdmin).toBe(true);
+  });
 });

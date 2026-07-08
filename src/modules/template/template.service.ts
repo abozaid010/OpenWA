@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Template } from './entities/template.entity';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto';
 import { createLogger } from '../../common/services/logger.service';
+import { isUniqueConstraintError } from '../../common/utils/unique-constraint.util';
 
 @Injectable()
 export class TemplateService {
@@ -23,9 +24,16 @@ export class TemplateService {
       footer: dto.footer ?? null,
     });
 
-    const saved = await this.templateRepository.save(template);
-    this.logger.log('Template created', { sessionId, templateId: saved.id, name: saved.name });
-    return saved;
+    try {
+      const saved = await this.templateRepository.save(template);
+      this.logger.log('Template created', { sessionId, templateId: saved.id, name: saved.name });
+      return saved;
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw new ConflictException(`A template named '${dto.name}' already exists for this session`);
+      }
+      throw err;
+    }
   }
 
   async findBySession(sessionId: string): Promise<Template[]> {
@@ -55,7 +63,12 @@ export class TemplateService {
     }
 
     if (templateName) {
-      const template = await this.templateRepository.findOne({ where: { name: templateName, sessionId } });
+      // Order by createdAt ASC so resolution is deterministic if more than one row shares a name
+      // (possible only on a DB predating the unique index); the migration keeps the earliest too.
+      const template = await this.templateRepository.findOne({
+        where: { name: templateName, sessionId },
+        order: { createdAt: 'ASC' },
+      });
       if (!template) {
         throw new NotFoundException(`Template with name '${templateName}' not found`);
       }
@@ -73,7 +86,14 @@ export class TemplateService {
     if (dto.header !== undefined) template.header = dto.header;
     if (dto.footer !== undefined) template.footer = dto.footer;
 
-    return this.templateRepository.save(template);
+    try {
+      return await this.templateRepository.save(template);
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw new ConflictException(`A template named '${template.name}' already exists for this session`);
+      }
+      throw err;
+    }
   }
 
   async delete(sessionId: string, id: string): Promise<void> {

@@ -2,7 +2,7 @@
 // so the no-await rule doesn't apply to them here.
 /* eslint-disable @typescript-eslint/require-await */
 import { HookManager } from './hook-manager.service';
-import { HookContext, HookResult } from './hook.interfaces';
+import { HookContext, HookResult, HookEvent } from './hook.interfaces';
 
 describe('HookManager', () => {
   let hm: HookManager;
@@ -95,6 +95,36 @@ describe('HookManager', () => {
     expect(res.continue).toBe(true);
   });
 
+  it('discards the mutated data of a handler that also returns an error (error means discard output)', async () => {
+    // A handler that signals an error must NOT have its (possibly partial/corrupted) mutation applied —
+    // otherwise a half-transformed payload reaches persistence/webhooks/WS presented as success.
+    hm.register(
+      'bad',
+      'message:received',
+      async () => ({ continue: true, data: 'CORRUPTED', error: new Error('partial failure') }),
+      10,
+    );
+
+    const res = await hm.execute('message:received', 'original', { source: 'test' });
+
+    expect(res.continue).toBe(true);
+    expect(res.data).toBe('original'); // the errored handler's mutation is dropped
+  });
+
+  it('discards an errored handler mutation even on the stop path (continue:false + error)', async () => {
+    hm.register(
+      'bad',
+      'message:received',
+      async () => ({ continue: false, data: 'CORRUPTED', error: new Error('x') }),
+      10,
+    );
+
+    const res = await hm.execute('message:received', 'original', { source: 'test' });
+
+    expect(res.continue).toBe(false); // the chain still stops
+    expect(res.data).toBe('original'); // but the errored mutation is not carried out on stop
+  });
+
   it('register/unregister/hasHooks/getHookCount track registrations', () => {
     expect(hm.hasHooks('session:created')).toBe(false);
     const id = hm.register('p', 'session:created', async ctx => ({ continue: true, data: ctx.data }));
@@ -153,5 +183,45 @@ describe('HookManager re-entrancy guard', () => {
     await manager.execute('message:received', { n: 1 }, { source: 'test' });
 
     expect(seen).toEqual(['received', 'sent']);
+  });
+});
+
+describe('HookManager.isInFlight + selective re-entrancy guard (conversation.send pattern)', () => {
+  const SENDING: HookEvent[] = ['message:sending'];
+
+  it('isInFlight is false at the top level and true only inside a matching in-flight context', () => {
+    const hm = new HookManager();
+    expect(hm.isInFlight('message:sending')).toBe(false);
+    let matching = false;
+    let unrelated = false;
+    hm.runInFlight(SENDING, () => {
+      matching = hm.isInFlight('message:sending');
+      unrelated = hm.isInFlight('message:received');
+    });
+    expect(matching).toBe(true);
+    expect(unrelated).toBe(false);
+  });
+
+  it('a top-level guarded send still fires message:sending for unrelated observers; genuine re-entrancy suppresses it', async () => {
+    const hm = new HookManager();
+    let observerCalls = 0;
+    hm.register('audit', 'message:sending', async ctx => {
+      observerCalls++;
+      return { continue: true, data: ctx.data };
+    });
+    // Mirrors the plugin-loader binding for ctx.conversations.send: guard ONLY on an already-in-flight event.
+    const runGuarded = <T>(events: HookEvent[], run: () => Promise<T>): Promise<T> =>
+      events.some(e => hm.isInFlight(e)) ? hm.runInFlight(events, run) : run();
+
+    // Top-level send: an unrelated audit/moderation observer MUST see the outbound message:sending.
+    await runGuarded(SENDING, () => hm.execute('message:sending', {}, { source: 'send' }));
+    expect(observerCalls).toBe(1);
+
+    // A send issued from WITHIN a message:sending handler's context (echo-loop) MUST be suppressed.
+    observerCalls = 0;
+    await hm.runInFlight(SENDING, () =>
+      runGuarded(SENDING, () => hm.execute('message:sending', {}, { source: 'reentrant-send' })),
+    );
+    expect(observerCalls).toBe(0);
   });
 });

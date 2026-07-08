@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-blue.svg" alt="Version"/>
+  <img src="https://img.shields.io/github/package-json/v/rmyndharis/OpenWA?label=version&color=blue" alt="Version"/>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"/>
   <img src="https://img.shields.io/badge/node-22_LTS-brightgreen.svg" alt="Node"/>
   <img src="https://img.shields.io/badge/NestJS-11.x-red.svg" alt="NestJS"/>
@@ -56,6 +56,18 @@
 | 21  | [Glossary](./21-glossary.md)                                     | Terms and definitions                             |
 | 22  | [n8n Integration](./22-n8n-integration.md)                       | n8n community nodes for OpenWA                    |
 | 23  | [Community Integrations](./23-community-integrations.md)         | Third-party adapters built on the OpenWA API      |
+| 23-S| [Plugin Sandboxing](./23-plugin-sandboxing.md)                   | Worker isolation, capabilities, and plugin limits |
+| 24  | [MCP Integration](./24-mcp-integration.md)                       | Model Context Protocol tools and auth model       |
+| 25  | [Integration Fabric](./25-integration-fabric.md)                | Inbound webhook substrate for plugin integrations |
+
+**Examples**
+
+| Example | Description |
+| ------- | ----------- |
+| [Session Phone-Number Pairing](./examples/session-phone-number-pairing.md) | Link an existing WhatsApp account by phone number instead of scanning QR |
+| [Chat History Limits](./examples/chat-history-limits.md) | Understand local message history vs bounded live WhatsApp history |
+| [Webhook Signature Verification](./examples/webhook-signature-verification.md) | Verify signed OpenWA webhook deliveries in Node.js and Python |
+| [n8n Appointment Booking Workflow](./examples/n8n-appointment-booking.md) | Build an appointment-booking flow with OpenWA and n8n |
 
 ## Quick Start
 
