@@ -27,6 +27,38 @@ export interface WebhookPayload {
   data: Record<string, unknown>;
 }
 
+/**
+ * Strip oversized media bytes from a webhook payload before delivery. Base64 media inflates the JSON
+ * body by ~33%, so a few-MB attachment easily trips a receiver's body-size limit → HTTP 413 and the
+ * retry storm that follows. When WEBHOOK_MEDIA_MAX_BYTES is set, any media larger than the limit is
+ * delivered as metadata only (mimetype/filename/size + `mediaTruncated: true`) — the message still
+ * arrives, just without the bytes; consumers can fetch them via the media/download endpoint. Unset =
+ * original behaviour (media always forwarded). Never mutates the input: the same message object is
+ * also emitted to WebSocket clients, so the cap must not leak into that path.
+ */
+export function capWebhookMedia(data: Record<string, unknown>): Record<string, unknown> {
+  const maxRaw = Number.parseInt(process.env.WEBHOOK_MEDIA_MAX_BYTES ?? '', 10);
+  const maxBytes = Number.isInteger(maxRaw) && maxRaw > 0 ? maxRaw : Number.POSITIVE_INFINITY;
+  if (maxBytes === Number.POSITIVE_INFINITY) return data;
+
+  const media = data.media as { mimetype?: string; filename?: string; data?: string } | undefined;
+  const base64 = typeof media?.data === 'string' ? media.data : undefined;
+  if (!base64) return data;
+
+  // Prefer the exact size the adapter already recorded; fall back to decoding the base64 length.
+  const sizeBytes =
+    typeof data.mediaSizeBytes === 'number' && data.mediaSizeBytes > 0
+      ? data.mediaSizeBytes
+      : Buffer.byteLength(base64, 'base64');
+  if (sizeBytes <= maxBytes) return data;
+
+  return {
+    ...data,
+    media: { mimetype: media?.mimetype, filename: media?.filename, size: sizeBytes },
+    mediaTruncated: true,
+  };
+}
+
 export interface WebhookJobData {
   webhookId: string;
   url: string;
@@ -208,8 +240,11 @@ export class WebhookService {
 
     const matchingWebhooks = webhooks.filter(w => w.events.includes(event) || w.events.includes('*'));
 
+    // Drop oversized media bytes before they ever reach a receiver (prevents HTTP 413 + retries).
+    const safeData = capWebhookMedia(data);
+
     // Generate idempotency key (same for all webhooks receiving this event)
-    const idempotencyKey = generateIdempotencyKey(event, { ...data, sessionId });
+    const idempotencyKey = generateIdempotencyKey(event, { ...safeData, sessionId });
 
     // Dispatch to all matching webhooks
     for (const webhook of matchingWebhooks) {
@@ -222,7 +257,7 @@ export class WebhookService {
         sessionId,
         idempotencyKey,
         deliveryId,
-        data,
+        data: safeData,
       };
 
       // Execute hook before webhook dispatch - plugins can modify payload

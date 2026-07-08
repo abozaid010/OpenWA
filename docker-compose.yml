@@ -99,6 +99,9 @@ services:
       # Skip downloading inbound WhatsApp media larger than this many bytes (metadata-only delivery).
       # Empty = download everything (unchanged). Set in .env (e.g. 5242880 = 5 MB) to protect Chromium.
       - INBOUND_MEDIA_MAX_BYTES=${INBOUND_MEDIA_MAX_BYTES:-}
+      # Strip media bytes from webhook payloads larger than this (metadata-only; prevents receiver 413s).
+      # Empty = always forward media bytes (unchanged). Set in .env (e.g. 1048576 = 1 MB) to cap payloads.
+      - WEBHOOK_MEDIA_MAX_BYTES=${WEBHOOK_MEDIA_MAX_BYTES:-}
       # Pin the WhatsApp Web version if a session hangs at "authenticating" after scanning the QR
       # (whatsapp-web.js 1.34.x can stall on an incompatible auto-selected WA-Web version, #251/#273).
       # Empty = auto-select (default). Set WWEBJS_WEB_VERSION in .env to a known-good version — see
