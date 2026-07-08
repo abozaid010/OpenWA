@@ -151,6 +151,7 @@ services:
       - NODE_OPTIONS=--max-old-space-size=768
       - SIMULATE_TYPING=${SIMULATE_TYPING:-true}
       - SIMULATE_TYPING_MAX_MS=${SIMULATE_TYPING_MAX_MS:-1000}
+      - WEBHOOK_MEDIA_MAX_BYTES=${WEBHOOK_MEDIA_MAX_BYTES:-}
 
     volumes:
       - openwa-data:/app/data
