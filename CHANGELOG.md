@@ -7,15 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Adds the Tier-2 plugin capability layer — the foundation for shipping bot-shaped features as extension
-plugins instead of in core (#265).
+## [0.4.1] - 2026-06-18
 
-> ⚠️ **Breaking (plugin API):** `PluginContext.getService` is removed. It was a stub returning `undefined`
-> with no real consumers; out-of-tree plugins must migrate to the new `ctx.messages` / `ctx.engine`
-> capabilities. As a breaking change this is slated for the next minor (v0.3.0).
+Bug-fix release found while verifying v0.4.0 on both engines (whatsapp-web.js and Baileys): the Baileys QR
+now renders in the dashboard, a `synchronize`-created SQLite data DB no longer crashes when adopting
+migrations, and graceful shutdown is clean. No API or breaking changes.
+
+### Fixed
+
+- **Baileys QR code is now scannable from the dashboard.** The Baileys engine returned the raw WhatsApp QR
+  ref string from `GET /sessions/:id/qr`, while the dashboard (and the whatsapp-web.js engine) expect a PNG
+  data URL — so the dashboard's `<img>` showed a broken image and Baileys sessions could not be linked via
+  the UI. The Baileys adapter now renders the QR to a `data:image/png` URL, matching the whatsapp-web.js
+  engine's contract (the REST response shape is now consistent across engines).
+- **Adopting migrations over a `synchronize`-created SQLite data DB no longer crashes on boot.** A data DB
+  whose schema was created by `DATABASE_SYNCHRONIZE=true` has an empty migrations table, so the baseline
+  migration re-ran `CREATE TABLE "sessions"` and aborted startup with `table "sessions" already exists`. The
+  baseline migration is now idempotent (it skips when the schema already exists, mirroring the other
+  migrations), so switching a SQLite data DB from synchronize to migration-managed boots cleanly and the DB
+  becomes migration-managed going forward (existing rows preserved). Fresh deployments are unaffected.
+- **Graceful shutdown no longer logs "could not find DataSource" on SIGTERM.** With two named TypeORM
+  connections (`main` + `data`), `@nestjs/typeorm`'s shutdown hook resolved the default (unnamed) DataSource
+  token and threw `Nest could not find DataSource element`, leaving the DataSources undestroyed and the
+  process exiting non-zero. The connection factories now carry their `name`, so the shutdown hook resolves
+  the correct named DataSource and the app shuts down cleanly (exit 0).
+
+### Changed
+
+- Internal: the SQLite data-DB configuration comment and a dead `synchronize` default in `app.module.ts` now
+  reflect the actual behavior (the data DB is migration-managed by default; `DATABASE_SYNCHRONIZE=true` opts
+  into synchronize). No runtime behavior change.
+
+## [0.4.0] - 2026-06-18
+
+Single-port deployment. The API now serves the bundled dashboard SPA itself, and the bundled Traefik
+reverse proxy is removed. This is a deployment/packaging change only — there are no API or
+application-code changes.
+
+### Changed
+
+- **BREAKING — single-port dashboard: the API now serves the bundled dashboard SPA.** In production the
+  NestJS API serves the built dashboard from its own port (default `2785`) via `@nestjs/serve-static`, so
+  there is no separate dashboard container and the UI is available by default wherever the API runs. `/api`
+  and `/socket.io` are excluded so they keep returning real API/WebSocket responses. Opt out with
+  `SERVE_DASHBOARD=false`. Dev is unchanged: `npm run dev` still runs the Vite dev server on `:2886` (HMR)
+  proxying to the API. Split-origin hosting (dashboard on a separate origin/CDN) still works: build with
+  `VITE_API_URL=<api-origin>` and host `dashboard/dist` anywhere. (#275)
+- The API's Content-Security-Policy now allows `https://fonts.googleapis.com` (`style-src`) and
+  `https://fonts.gstatic.com` (`font-src`) so the dashboard's webfonts load now that it is served under the
+  API's CSP. (#275)
+- **BREAKING — removed the bundled Traefik reverse proxy.** With the API serving both the UI and the API
+  on one port, the shipped Traefik service was a single-backend passthrough that added no value (it
+  terminated no TLS out of the box). Removed the `traefik` service, the `traefik/` configs, and the
+  `with-proxy` profile. For TLS / public exposure, put your own reverse proxy (nginx, Caddy, a cloud load
+  balancer, or a k8s Ingress) in front of the API — see `docs/12-troubleshooting-faq.md`. (#276)
 
 ### Added
 
+- `npm run build:all` (build API + dashboard) and `npm run prod` (build then serve) for running the
+  production build directly without Docker. (#275)
+
+### Migration
+
+- The dashboard moved from `:2886` (separate nginx container) to the API port `:2785`. Update bookmarks,
+  monitoring, and any external reverse-proxy config accordingly. (#275)
+- The `with-dashboard` and `with-proxy` compose profiles are removed, and the `DASHBOARD_PORT`,
+  `PROXY_ENABLED`, and `DASHBOARD_ENABLED` env vars are gone (silently ignored if still set). `--profile
+  full` now starts the optional datastores (postgres, redis, minio). If you relied on the bundled Traefik
+  for TLS, front the API with your own reverse proxy. (#275, #276)
+
+## [0.3.0] - 2026-06-18
+
+Engine pluggability and plugin extensibility. OpenWA can now run on a second, browser-free WhatsApp engine
+(Baileys) as a peer to whatsapp-web.js, and bot-shaped features can ship as first-party extension plugins
+on a scoped capability layer instead of living in core (#265).
+
+> ⚠️ **Breaking (plugin API):** `PluginContext.getService` is removed. It was a stub returning `undefined`
+> with no real consumers; out-of-tree plugins must migrate to the new `ctx.messages` / `ctx.engine`
+> capabilities.
+
+### Added
+
+- **Baileys engine (`ENGINE_TYPE=baileys`)** — a second, browser-free WhatsApp engine built on
+  `@whiskeysockets/baileys` (WebSocket/Noise protocol, no Chromium), selectable as a peer to the default
+  whatsapp-web.js engine. It supports linking (QR + pairing code); sending text, media
+  (image/video/audio/document/sticker), location, and contacts; reply / forward / react /
+  delete-for-everyone; full group management (create, participants, subject/description, invite codes),
+  profile pictures, and block/unblock; contacts, chats, and read receipts; and **receiving** messages with
+  their media, captions, location, quoted context, reactions, and remote deletes. URL media is fetched
+  through the same SSRF-guarded path as the default engine. Reply/forward/react/delete are backed by a
+  per-session persisted message store (`baileys_stored_messages`, bounded by `BAILEYS_MESSAGE_STORE_LIMIT`,
+  default 5000; cleared on logout; CASCADE-deleted with its session). `getChatHistory` and
+  labels/channels/status/catalog remain unsupported (HTTP 501) — Baileys has no on-demand history API, and
+  the rest are parity with the whatsapp-web.js engine. Config: `BAILEYS_AUTH_DIR` (default `./data/baileys`);
+  proxy is not yet supported on this engine. The engine loads **lazily** (dynamic `import()` only when
+  selected), so default-engine operators are unaffected and there is **no global Node version floor**.
+  (#299, #307, #308, #309, #310, #312)
 - **Plugin capability layer (Tier-2 extension plugins):** scoped `ctx.messages` (`sendText` / `reply`,
   routed through `MessageService` so persistence and the send pipeline are preserved) and read-only
   `ctx.engine` (`getGroupInfo` / `getContacts` / `getContactById` / `checkNumberExists` / `getChats`) on
@@ -27,6 +114,13 @@ plugins instead of in core (#265).
   documented as out of scope for now). (#294)
 - **`auto-reply` reference extension plugin**, first-party and **registered disabled by default** — enable
   it via `POST /plugins/auto-reply/enable` to exercise the capability layer end-to-end. (#294)
+- **Group auto-translation extension plugin** — a first-party, **disabled-by-default** plugin that
+  auto-translates incoming group messages via LibreTranslate, built entirely on the new capability layer
+  (supersedes the earlier in-core approach). (#300)
+- **Schema-driven plugin config form (dashboard):** the Plugins page now renders an editable config form
+  for any plugin that exposes a `configSchema` (text / secret / number / boolean / enum), saved via the
+  existing plugin-config endpoint — previously only the engine plugin had editable fields. (#303)
+- **Spanish (`es`) dashboard locale** at full parity with English. (#292)
 
 ### Changed
 
@@ -34,6 +128,12 @@ plugins instead of in core (#265).
   (`sessionId`/`proxyUrl`/`proxyType`) to an engine plugin and supplies engine-specific config (Puppeteer
   for whatsapp-web.js) as a blob via the plugin context, so a non-browser engine can be added without the
   factory knowing browser fields. No env-var or behavior change for existing deployments. (#296)
+
+### Fixed
+
+- **Dashboard stops polling for a QR code once its session is connected**, and the dev Docker Compose setup
+  proxies the dashboard to the API service correctly. (#311)
+- Italian locale: the message-template strings are now fully translated. (#301)
 
 ## [0.2.10] - 2026-06-17
 

@@ -557,6 +557,24 @@ describe('SessionService', () => {
       expect(dispatchedEvents('message.sent')).toHaveLength(0);
     });
 
+    it('does not dispatch message.received for a status/story broadcast via onMessage (isStatusBroadcast)', async () => {
+      const callbacks = await startAndCaptureCallbacks();
+
+      // Engine delivers a status@broadcast inbound — engine-neutral guard must drop it.
+      callbacks.onMessage!(
+        makeMessage({
+          from: 'status@broadcast',
+          to: 'me@c.us',
+          chatId: 'status@broadcast',
+          fromMe: false,
+          isStatusBroadcast: true,
+        }),
+      );
+      await flush();
+
+      expect(dispatchedEvents('message.received')).toHaveLength(0);
+    });
+
     // The default hookManager mock returns an empty `data: {}`; echo the message through so the
     // engine-set fields (isLidSender) survive the hook and reach the inline-resolution branch.
     const echoHook = () =>

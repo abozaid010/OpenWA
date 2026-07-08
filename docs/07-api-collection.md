@@ -21,34 +21,22 @@ X-API-Key: your-api-key-here
 
 ### Response Format
 
+Responses are the **raw handler payload** — there is no `{success, data, meta}` envelope.
+A successful response is the resource itself (object) or a bare array for lists.
+
 ```json
-{
-  "success": true,
-  "data": { ... },
-  "meta": {
-    "timestamp": "2026-02-02T10:30:00Z",
-    "requestId": "req_abc123"
-  }
-}
+{ "id": "abc", "status": "READY" }
 ```
 
 ### Error Format
 
+Errors use the NestJS default shape:
+
 ```json
 {
-  "success": false,
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Invalid phone number format",
-    "details": {
-      "field": "phone",
-      "expected": "format: 628xxx@c.us"
-    }
-  },
-  "meta": {
-    "timestamp": "2026-02-02T10:30:00Z",
-    "requestId": "req_abc123"
-  }
+  "statusCode": 400,
+  "message": "Invalid phone number format",
+  "error": "Bad Request"
 }
 ```
 
@@ -83,7 +71,7 @@ curl -H "X-API-Key: $API_KEY" \
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "uptime": 86400,
   "timestamp": "2026-02-02T10:30:00Z",
   "checks": {
@@ -145,26 +133,18 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "default",
-      "name": "Default Session",
-      "status": "CONNECTED",
-      "phoneNumber": "628123456789",
-      "profileName": "John Doe",
-      "profilePicture": "https://...",
-      "createdAt": "2026-02-01T00:00:00Z",
-      "lastSeen": "2026-02-02T10:30:00Z"
-    }
-  ],
-  "meta": {
-    "total": 1,
-    "limit": 20,
-    "offset": 0
+[
+  {
+    "id": "default",
+    "name": "Default Session",
+    "status": "CONNECTED",
+    "phoneNumber": "628123456789",
+    "profileName": "John Doe",
+    "profilePicture": "https://...",
+    "createdAt": "2026-02-01T00:00:00Z",
+    "lastSeen": "2026-02-02T10:30:00Z"
   }
-}
+]
 ```
 
 ### POST /api/sessions
@@ -197,14 +177,11 @@ curl -X POST http://localhost:2785/api/sessions \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "session-1",
-    "name": "Customer Support",
-    "status": "INITIALIZING",
-    "qr": null,
-    "createdAt": "2026-02-02T10:30:00Z"
-  }
+  "id": "session-1",
+  "name": "Customer Support",
+  "status": "INITIALIZING",
+  "qr": null,
+  "createdAt": "2026-02-02T10:30:00Z"
 }
 ```
 
@@ -220,28 +197,25 @@ curl -H "X-API-Key: $API_KEY" \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "session-1",
-    "name": "Customer Support",
-    "status": "CONNECTED",
-    "phoneNumber": "628123456789",
-    "profileName": "John Doe",
-    "profilePicture": "https://...",
-    "pushName": "John",
-    "platform": "android",
-    "config": {
-      "autoReconnect": true,
-      "webhookUrl": "https://your-server.com/webhook"
-    },
-    "stats": {
-      "messagesReceived": 1234,
-      "messagesSent": 567,
-      "lastMessageAt": "2026-02-02T10:25:00Z"
-    },
-    "createdAt": "2026-02-01T00:00:00Z",
-    "lastSeen": "2026-02-02T10:30:00Z"
-  }
+  "id": "session-1",
+  "name": "Customer Support",
+  "status": "CONNECTED",
+  "phoneNumber": "628123456789",
+  "profileName": "John Doe",
+  "profilePicture": "https://...",
+  "pushName": "John",
+  "platform": "android",
+  "config": {
+    "autoReconnect": true,
+    "webhookUrl": "https://your-server.com/webhook"
+  },
+  "stats": {
+    "messagesReceived": 1234,
+    "messagesSent": 567,
+    "lastMessageAt": "2026-02-02T10:25:00Z"
+  },
+  "createdAt": "2026-02-01T00:00:00Z",
+  "lastSeen": "2026-02-02T10:30:00Z"
 }
 ```
 
@@ -263,10 +237,7 @@ curl -X DELETE \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "message": "Session deleted successfully"
-  }
+  "message": "Session deleted successfully"
 }
 ```
 
@@ -287,11 +258,8 @@ curl -H "X-API-Key: $API_KEY" \
 **Response (format=base64):**
 ```json
 {
-  "success": true,
-  "data": {
-    "qr": "data:image/png;base64,iVBORw0KGgo...",
-    "expiresAt": "2026-02-02T10:31:00Z"
-  }
+  "qr": "data:image/png;base64,iVBORw0KGgo...",
+  "expiresAt": "2026-02-02T10:31:00Z"
 }
 ```
 
@@ -311,11 +279,8 @@ curl -X POST \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "message": "Session restarting",
-    "status": "INITIALIZING"
-  }
+  "message": "Session restarting",
+  "status": "INITIALIZING"
 }
 ```
 
@@ -332,10 +297,7 @@ curl -X POST \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "message": "Session logged out successfully"
-  }
+  "message": "Session logged out successfully"
 }
 ```
 
@@ -438,26 +400,22 @@ curl -X POST http://localhost:2785/api/sessions/default/messages \
 **Interactive messages (Buttons / List): not supported**
 
 > ⚠️ **Buttons and List (interactive) messages are not available** through OpenWA's
-> whatsapp-web.js engine. WhatsApp stopped honoring the interactive-message payload
-> for unofficial web clients around 2021–2022 — the `Buttons` / `List` classes still
-> exist in the library, but messages built with them are **silently dropped and never
-> delivered** to recipients. OpenWA therefore does not expose `type: "buttons"` or
-> `type: "list"` endpoints; sending interactive messages requires the official
-> WhatsApp Business Cloud API. (The earlier examples here were speculative and never
-> implemented — see #158.)
+> unofficial-client engines (`whatsapp-web.js` default or `baileys`). WhatsApp stopped
+> honoring the interactive-message payload for unofficial clients around 2021–2022 —
+> messages of this type are **silently dropped and never delivered** to recipients.
+> OpenWA therefore does not expose `type: "buttons"` or `type: "list"` endpoints;
+> sending interactive messages requires the official WhatsApp Business Cloud API.
+> (The earlier examples here were speculative and never implemented — see #158.)
 
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "MSG_ABC123DEF456",
-    "phone": "628123456789@c.us",
-    "type": "text",
-    "body": "Hello, World!",
-    "status": "PENDING",
-    "timestamp": "2026-02-02T10:30:00Z"
-  }
+  "id": "MSG_ABC123DEF456",
+  "phone": "628123456789@c.us",
+  "type": "text",
+  "body": "Hello, World!",
+  "status": "PENDING",
+  "timestamp": "2026-02-02T10:30:00Z"
 }
 ```
 
@@ -490,29 +448,22 @@ curl -H "X-API-Key: $API_KEY" \
 | limit | number | Max results (default: 50, max: 200) |
 | before | string | Messages before this ID |
 | after | string | Messages after this ID |
-| type | string | Filter by type: `chat`, `image`, `video`, etc. |
+| type | string | Filter by type: `text`, `image`, `video`, etc. |
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "MSG_ABC123",
-      "from": "628123456789@c.us",
-      "to": "628987654321@c.us",
-      "body": "Hello!",
-      "type": "chat",
-      "timestamp": "2026-02-02T10:25:00Z",
-      "status": "READ",
-      "isFromMe": false
-    }
-  ],
-  "meta": {
-    "hasMore": true,
-    "nextCursor": "MSG_DEF456"
+[
+  {
+    "id": "MSG_ABC123",
+    "from": "628123456789@c.us",
+    "to": "628987654321@c.us",
+    "body": "Hello!",
+    "type": "text",
+    "timestamp": "2026-02-02T10:25:00Z",
+    "status": "READ",
+    "isFromMe": false
   }
-}
+]
 ```
 
 ### GET /api/sessions/:id/messages/:messageId
@@ -563,20 +514,17 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "628123456789@c.us",
-      "name": "John Doe",
-      "pushName": "John",
-      "shortName": "John",
-      "isMyContact": true,
-      "isBlocked": false,
-      "profilePicture": "https://..."
-    }
-  ]
-}
+[
+  {
+    "id": "628123456789@c.us",
+    "name": "John Doe",
+    "pushName": "John",
+    "shortName": "John",
+    "isMyContact": true,
+    "isBlocked": false,
+    "profilePicture": "https://..."
+  }
+]
 ```
 
 ### GET /api/sessions/:id/contacts/:phone
@@ -642,20 +590,17 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "120363123456789@g.us",
-      "name": "Family Group",
-      "description": "Family chat",
-      "participantsCount": 15,
-      "isAdmin": true,
-      "profilePicture": "https://...",
-      "createdAt": "2025-01-15T00:00:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "120363123456789@g.us",
+    "name": "Family Group",
+    "description": "Family chat",
+    "participantsCount": 15,
+    "isAdmin": true,
+    "profilePicture": "https://...",
+    "createdAt": "2025-01-15T00:00:00Z"
+  }
+]
 ```
 
 ### POST /api/sessions/:id/groups
@@ -678,12 +623,9 @@ curl -X POST http://localhost:2785/api/sessions/default/groups \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "120363987654321@g.us",
-    "name": "New Group",
-    "inviteCode": "ABC123XYZ"
-  }
+  "id": "120363987654321@g.us",
+  "name": "New Group",
+  "inviteCode": "ABC123XYZ"
 }
 ```
 
@@ -699,31 +641,28 @@ curl -H "X-API-Key: $API_KEY" \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "120363123456789@g.us",
-    "name": "Family Group",
-    "description": "Family chat",
-    "owner": "628111222333@c.us",
-    "participants": [
-      {
-        "id": "628123456789@c.us",
-        "isAdmin": true,
-        "isSuperAdmin": false
-      },
-      {
-        "id": "628987654321@c.us",
-        "isAdmin": false,
-        "isSuperAdmin": false
-      }
-    ],
-    "settings": {
-      "announce": false,
-      "restrict": false
+  "id": "120363123456789@g.us",
+  "name": "Family Group",
+  "description": "Family chat",
+  "owner": "628111222333@c.us",
+  "participants": [
+    {
+      "id": "628123456789@c.us",
+      "isAdmin": true,
+      "isSuperAdmin": false
     },
-    "inviteCode": "ABC123XYZ",
-    "createdAt": "2025-01-15T00:00:00Z"
-  }
+    {
+      "id": "628987654321@c.us",
+      "isAdmin": false,
+      "isSuperAdmin": false
+    }
+  ],
+  "settings": {
+    "announce": false,
+    "restrict": false
+  },
+  "inviteCode": "ABC123XYZ",
+  "createdAt": "2025-01-15T00:00:00Z"
 }
 ```
 
@@ -815,11 +754,8 @@ curl -H "X-API-Key: $API_KEY" \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "inviteCode": "ABC123XYZ",
-    "inviteUrl": "https://chat.whatsapp.com/ABC123XYZ"
-  }
+  "inviteCode": "ABC123XYZ",
+  "inviteUrl": "https://chat.whatsapp.com/ABC123XYZ"
 }
 ```
 
@@ -846,20 +782,17 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "wh_123",
-      "url": "https://your-server.com/webhook",
-      "events": ["message.received", "message.ack"],
-      "sessionId": "sess_abc123",
-      "enabled": true,
-      "secret": "whsec_***",
-      "createdAt": "2026-02-01T00:00:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "wh_123",
+    "url": "https://your-server.com/webhook",
+    "events": ["message.received", "message.ack"],
+    "sessionId": "sess_abc123",
+    "enabled": true,
+    "secret": "whsec_***",
+    "createdAt": "2026-02-01T00:00:00Z"
+  }
+]
 ```
 
 ### POST /api/sessions/:sessionId/webhooks
@@ -905,16 +838,13 @@ group.update           - Group settings changed
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "wh_456",
-    "url": "https://your-server.com/webhook",
-    "events": ["message.received", "message.ack", "session.status"],
-    "sessionId": "sess_abc123",
-    "enabled": true,
-    "secret": "whsec_abc123xyz",
-    "createdAt": "2026-02-02T10:30:00Z"
-  }
+  "id": "wh_456",
+  "url": "https://your-server.com/webhook",
+  "events": ["message.received", "message.ack", "session.status"],
+  "sessionId": "sess_abc123",
+  "enabled": true,
+  "secret": "whsec_abc123xyz",
+  "createdAt": "2026-02-02T10:30:00Z"
 }
 ```
 
@@ -962,23 +892,20 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "log_789",
-      "webhookId": "wh_456",
-      "event": "message.received",
-      "status": "success",
-      "statusCode": 200,
-      "duration": 150,
-      "attempt": 1,
-      "payload": { ... },
-      "response": { ... },
-      "createdAt": "2026-02-02T10:30:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "log_789",
+    "webhookId": "wh_456",
+    "event": "message.received",
+    "status": "success",
+    "statusCode": 200,
+    "duration": 150,
+    "attempt": 1,
+    "payload": { },
+    "response": { },
+    "createdAt": "2026-02-02T10:30:00Z"
+  }
+]
 ```
 
 ### POST /api/sessions/:sessionId/webhooks/:id/test
@@ -994,14 +921,11 @@ curl -X POST \
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "status": "success",
-    "statusCode": 200,
-    "duration": 125,
-    "response": {
-      "received": true
-    }
+  "status": "success",
+  "statusCode": 200,
+  "duration": 125,
+  "response": {
+    "received": true
   }
 }
 ```
@@ -1026,24 +950,21 @@ curl -H "X-API-Key: $API_KEY" \
 
 **Response:**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "2a8f41e3-3b9a-4a1d-b6d0-b9910df8f0be",
-      "name": "Production Key",
-      "keyPrefix": "owa_k1_abcd",
-      "role": "operator",
-      "allowedIps": ["192.168.1.10"],
-      "allowedSessions": ["session-uuid-1"],
-      "isActive": true,
-      "lastUsedAt": "2026-02-02T10:30:00Z",
-      "usageCount": 12,
-      "expiresAt": null,
-      "createdAt": "2026-01-01T00:00:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "2a8f41e3-3b9a-4a1d-b6d0-b9910df8f0be",
+    "name": "Production Key",
+    "keyPrefix": "owa_k1_abcd",
+    "role": "operator",
+    "allowedIps": ["192.168.1.10"],
+    "allowedSessions": ["session-uuid-1"],
+    "isActive": true,
+    "lastUsedAt": "2026-02-02T10:30:00Z",
+    "usageCount": 12,
+    "expiresAt": null,
+    "createdAt": "2026-01-01T00:00:00Z"
+  }
+]
 ```
 
 ### POST /api/auth/api-keys
@@ -1073,20 +994,17 @@ viewer    - Read-only API access where supported
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "4d0564f1-5fb7-4e4a-baae-4cb0d154e861",
-    "name": "Integration Key",
-    "keyPrefix": "owa_k1_efgh",
-    "role": "operator",
-    "allowedIps": ["192.168.1.10"],
-    "allowedSessions": ["default"],
-    "isActive": true,
-    "usageCount": 0,
-    "expiresAt": "2027-01-01T00:00:00Z",
-    "createdAt": "2026-02-02T10:30:00Z",
-    "apiKey": "owa_k1_efgh5678..."
-  }
+  "id": "4d0564f1-5fb7-4e4a-baae-4cb0d154e861",
+  "name": "Integration Key",
+  "keyPrefix": "owa_k1_efgh",
+  "role": "operator",
+  "allowedIps": ["192.168.1.10"],
+  "allowedSessions": ["default"],
+  "isActive": true,
+  "usageCount": 0,
+  "expiresAt": "2027-01-01T00:00:00Z",
+  "createdAt": "2026-02-02T10:30:00Z",
+  "apiKey": "owa_k1_efgh5678..."
 }
 ```
 
@@ -1333,7 +1251,7 @@ curl -s -X POST "$BASE_URL/api/sessions" \
 # Get QR Code
 echo "=== Get QR Code ==="
 curl -s "$BASE_URL/api/sessions/$SESSION_ID/qr" \
-  -H "X-API-Key: $API_KEY" | jq -r '.data.qr'
+  -H "X-API-Key: $API_KEY" | jq -r '.qr'
 
 # Send Text Message
 echo "=== Send Text Message ==="

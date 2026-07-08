@@ -70,18 +70,8 @@ services:
       retries: 3
       start_period: 30s
 
-  # Dashboard Frontend
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    container_name: openwa-dashboard
-    ports:
-      - '${BIND_HOST:-127.0.0.1}:2886:80'
-    depends_on:
-      openwa:
-        condition: service_healthy
-    restart: unless-stopped
+  # The dashboard SPA is bundled into the image and served by NestJS on the same port:
+  # open http://localhost:2785 — there is no separate dashboard container.
 
 networks:
   default:

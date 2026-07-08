@@ -4,7 +4,9 @@ import { IWhatsAppEngine } from './interfaces/whatsapp-engine.interface';
 import { WhatsAppWebJsAdapter } from './adapters/whatsapp-web-js.adapter';
 import { PluginLoaderService, PluginType, IEnginePlugin, PluginManifest } from '../core/plugins';
 import { WhatsAppWebJsPlugin } from '../plugins/engines/whatsapp-web-js';
+import { BaileysPlugin } from '../plugins/engines/baileys';
 import { createLogger } from '../common/services/logger.service';
+import { BaileysMessageStoreService } from './adapters/baileys-message-store.service';
 
 export interface EngineCreateOptions {
   sessionId: string;
@@ -20,6 +22,7 @@ export class EngineFactory implements OnModuleInit {
   constructor(
     private readonly configService: ConfigService,
     private readonly pluginLoader: PluginLoaderService,
+    private readonly baileysMessageStore: BaileysMessageStoreService,
   ) {
     this.engineType = this.configService.get<string>('engine.type') ?? 'whatsapp-web.js';
   }
@@ -45,6 +48,23 @@ export class EngineFactory implements OnModuleInit {
     // Supply the engine config sub-tree (engine.* from configuration.ts) as an opaque blob;
     // the plugin reads its own namespace (puppeteer.*, sessionDataPath) from context.config.
     this.pluginLoader.registerBuiltInPlugin(wwjsManifest, wwjsPlugin, this.configService.get('engine') ?? {});
+
+    // Register Baileys as a second built-in engine plugin. Same opaque engine blob; the plugin
+    // reads only its own namespace (baileys.authDir) from context.config.
+    const baileysManifest: PluginManifest = {
+      id: 'baileys',
+      name: 'Baileys Engine',
+      version: '1.0.0',
+      type: PluginType.ENGINE,
+      description: 'Baileys (WebSocket, no-browser) engine adapter',
+      main: 'index.ts',
+      provides: ['whatsapp-engine'],
+    };
+    this.pluginLoader.registerBuiltInPlugin(
+      baileysManifest,
+      new BaileysPlugin(this.baileysMessageStore),
+      this.configService.get('engine') ?? {},
+    );
 
     // Auto-enable the configured engine
     try {

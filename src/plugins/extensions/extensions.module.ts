@@ -1,6 +1,7 @@
 import { Injectable, Module, OnModuleInit } from '@nestjs/common';
 import { PluginLoaderService, PluginManifest, PluginType } from '../../core/plugins';
 import { AutoReplyPlugin } from './auto-reply';
+import { TranslationPlugin } from './translation';
 import { createLogger } from '../../common/services/logger.service';
 
 /**
@@ -28,6 +29,52 @@ export class ExtensionsRegistrar implements OnModuleInit {
 
     this.pluginLoader.registerBuiltInPlugin(autoReplyManifest, new AutoReplyPlugin());
     this.logger.log('Auto-reply reference plugin registered (disabled)');
+
+    const translationManifest: PluginManifest = {
+      id: 'translation',
+      name: 'Group Auto-Translation',
+      version: '1.0.0',
+      type: PluginType.EXTENSION,
+      description:
+        "Auto-translates group messages between participants' languages via LibreTranslate. Configure in-group with /tr commands. Disabled by default.",
+      main: 'index.ts',
+      permissions: ['messages:send'],
+      sessions: ['*'],
+      // Exposed via GET /plugins so the dashboard renders an editable config form (URL + API key, etc.).
+      configSchema: {
+        type: 'object',
+        properties: {
+          libretranslateUrl: {
+            type: 'string',
+            title: 'LibreTranslate URL',
+            description:
+              'Base URL of the LibreTranslate instance (e.g. http://libretranslate:7001 or https://libretranslate.com).',
+            default: 'http://localhost:7001',
+            required: true,
+          },
+          libretranslateApiKey: {
+            type: 'string',
+            title: 'LibreTranslate API key',
+            description:
+              'Optional API key, if your LibreTranslate instance requires one (e.g. hosted libretranslate.com).',
+            secret: true,
+          },
+          timeoutMs: { type: 'number', title: 'Translate timeout (ms)', default: 5000 },
+          commandPrefix: { type: 'string', title: 'Command prefix', default: '/tr' },
+          minLength: { type: 'number', title: 'Min message length to translate', default: 2 },
+          maxLength: { type: 'number', title: 'Max message length to translate', default: 2000 },
+          denyReply: {
+            type: 'boolean',
+            title: 'Reply on denied commands',
+            description: "Reply with an 'admins only' message when a non-admin runs a restricted command.",
+            default: false,
+          },
+        },
+      },
+    };
+
+    this.pluginLoader.registerBuiltInPlugin(translationManifest, new TranslationPlugin());
+    this.logger.log('Translation plugin registered (disabled)');
   }
 }
 

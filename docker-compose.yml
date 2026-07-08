@@ -52,7 +52,7 @@ services:
       dockerfile: Dockerfile
     container_name: openwa-api
     restart: unless-stopped
-    # App network for datastores/traefik/dashboard + the isolated network to reach
+    # App network for datastores + the isolated network to reach
     # docker-proxy (DOCKER_HOST). createService() in docker.service.ts attaches
     # orchestrated containers to the literal `openwa-network`, so its name is fixed.
     networks:
@@ -180,30 +180,15 @@ services:
       - 'com.openwa.service=api'
       - 'com.openwa.core=true'
 
-  # ===== CORE: Dashboard Frontend =====
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile.traefik
-    container_name: openwa-dashboard
-    profiles: ['with-dashboard', 'full']
-    restart: unless-stopped
-    # App network only — the dashboard must NOT be able to reach docker-proxy:2375 (H6).
-    networks:
-      - openwa-network
-    expose:
-      - '80'
-    depends_on:
-      - openwa-api
-    labels:
-      - 'com.openwa.service=dashboard'
-      - 'com.openwa.core=true'
+  # The dashboard SPA is now bundled into the openwa-api image and served by NestJS on the
+  # same port (2785) — there is no separate dashboard container. Reach it at the openwa-api
+  # port directly; put your own TLS reverse proxy (nginx/Caddy/cloud LB) in front if needed.
 
   # ===== OPTIONAL: Built-in PostgreSQL =====
   postgres:
     image: postgres:16-alpine
     container_name: openwa-postgres
-    profiles: ['postgres']
+    profiles: ['postgres', 'full']
     restart: unless-stopped
     networks:
       - openwa-network
@@ -231,7 +216,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: openwa-redis
-    profiles: ['redis']
+    profiles: ['redis', 'full']
     restart: unless-stopped
     networks:
       - openwa-network
@@ -253,7 +238,7 @@ services:
   minio:
     image: minio/minio
     container_name: openwa-minio
-    profiles: ['minio']
+    profiles: ['minio', 'full']
     restart: unless-stopped
     networks:
       - openwa-network
@@ -290,8 +275,8 @@ volumes:
     driver: local
 
 networks:
-  # Application network — datastores, traefik, dashboard, and openwa-api. Keep the
-  # name `openwa-network`: docker.service.ts attaches orchestrated containers to it by literal name.
+  # Application network — datastores and openwa-api. Keep the name `openwa-network`:
+  # docker.service.ts attaches orchestrated containers to it by literal name.
   openwa-network:
     name: openwa-network
   # Isolated network for the Docker socket proxy. `internal: true` means no external

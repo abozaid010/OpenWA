@@ -1,5 +1,8 @@
 import { Module, DynamicModule, Type } from '@nestjs/common';
+import { ServeStaticModule } from '@nestjs/serve-static';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import * as fs from 'fs';
+import * as path from 'path';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 import configuration from './config/configuration';
@@ -41,6 +44,27 @@ if (process.env.QUEUE_ENABLED === 'true') {
   queueModules.push(queueModule.QueueModule);
 }
 
+// Serve the bundled dashboard SPA from this same NestJS process/port when a build is
+// present (the production image copies dashboard/dist in). In local dev the build is
+// absent, so this stays inert and the Vite dev server (:2886) handles the UI. Opt out
+// explicitly with SERVE_DASHBOARD=false. The path + flags are exported so main.ts can
+// log a clear status line (served / disabled / build missing) at startup.
+export const DASHBOARD_DIST = path.resolve(__dirname, '..', 'dashboard', 'dist');
+export const dashboardServingEnabled = process.env.SERVE_DASHBOARD !== 'false';
+export const dashboardBuildPresent = fs.existsSync(path.join(DASHBOARD_DIST, 'index.html'));
+
+const serveStaticModules: Array<Type | DynamicModule> = [];
+if (dashboardServingEnabled && dashboardBuildPresent) {
+  serveStaticModules.push(
+    ServeStaticModule.forRoot({
+      rootPath: DASHBOARD_DIST,
+      // Let Nest own these so unknown API/socket routes return real 404s/JSON rather
+      // than the SPA index.html fallback (Express 5 / path-to-regexp v8 wildcard syntax).
+      exclude: ['/api/{*splat}', '/socket.io/{*splat}'],
+    }),
+  );
+}
+
 @Module({
   imports: [
     // Configuration
@@ -61,6 +85,7 @@ if (process.env.QUEUE_ENABLED === 'true') {
         // api_keys/audit_logs schema instead — never both at once.
         const synchronize = configService.get<boolean>('database.synchronize', true);
         return {
+          name: 'main',
           type: 'sqlite' as const,
           database: configService.get<string>('database.database', './data/main.sqlite'),
           entities: [
@@ -90,6 +115,7 @@ if (process.env.QUEUE_ENABLED === 'true') {
             __dirname + '/modules/webhook/**/*.entity{.ts,.js}',
             __dirname + '/modules/message/**/*.entity{.ts,.js}',
             __dirname + '/modules/template/**/*.entity{.ts,.js}',
+            __dirname + '/engine/**/*.entity{.ts,.js}',
           ],
           migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
           logging: configService.get<boolean>('dataDatabase.logging', false),
@@ -98,6 +124,7 @@ if (process.env.QUEUE_ENABLED === 'true') {
         if (dbType === 'postgres') {
           return {
             ...baseConfig,
+            name: 'data',
             type: 'postgres' as const,
             host: configService.get<string>('dataDatabase.host'),
             port: configService.get<number>('dataDatabase.port'),
@@ -122,15 +149,18 @@ if (process.env.QUEUE_ENABLED === 'true') {
           };
         }
 
-        // SQLite: zero-config. Default to synchronize=true so the embedded
-        // database "just works" on first boot without a separate migration step.
-        // Users can opt out with DATABASE_SYNCHRONIZE=false to use migrations instead.
+        // SQLite data DB: schema is MIGRATION-managed by default (DATABASE_SYNCHRONIZE unset/false),
+        // matching configuration.ts and .env.example ("Set false in production"). Set
+        // DATABASE_SYNCHRONIZE=true for zero-config synchronize instead. Computed once: the resolved
+        // value is always a boolean, so a get(..., true) fallback would never fire (and would be a trap).
+        const synchronize = configService.get<boolean>('dataDatabase.synchronize', false);
         return {
           ...baseConfig,
+          name: 'data',
           type: 'sqlite' as const,
           database: configService.get<string>('dataDatabase.database', './data/openwa.sqlite'),
-          synchronize: configService.get<boolean>('dataDatabase.synchronize', true),
-          migrationsRun: !configService.get<boolean>('dataDatabase.synchronize', true),
+          synchronize,
+          migrationsRun: !synchronize,
         };
       },
     }),
@@ -188,6 +218,7 @@ if (process.env.QUEUE_ENABLED === 'true') {
     CatalogModule, // Phase 3: Catalog API (WhatsApp Business)
     PluginsApiModule, // Phase 5: Plugins API
     ExtensionsModule, // First-party extension plugins (registered disabled)
+    ...serveStaticModules, // Bundled dashboard SPA (production single-port setup)
   ],
 })
 export class AppModule {}

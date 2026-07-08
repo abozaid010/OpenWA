@@ -656,8 +656,12 @@ df -h
 
 ### Resource Estimation
 
+> **Engine note:** The figures below apply to the default `whatsapp-web.js` engine
+> (Chromium/Puppeteer). With `ENGINE_TYPE=baileys` (browser-free), memory per session
+> is significantly lower — re-baseline with your own load profile.
+
 ```
-Per Session Requirements:
+Per Session Requirements (ENGINE_TYPE=whatsapp-web.js):
 - Memory: 300-500MB (average 400MB)
 - CPU: 0.1-0.2 cores idle, 0.5 cores peak
 - Disk: 100MB base + ~1KB per message

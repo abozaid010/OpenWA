@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
-import { AppModule } from './app.module';
+import { AppModule, DASHBOARD_DIST, dashboardServingEnabled, dashboardBuildPresent } from './app.module';
 import { ShutdownService } from './common/services/shutdown.service';
 import { LoggerService, LogLevel, createLogger } from './common/services/logger.service';
 import { createSwaggerConfig } from './config/swagger.config';
@@ -132,11 +132,14 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          // The bundled dashboard pulls webfonts from Google Fonts (CSS from fonts.googleapis.com,
+          // font files from fonts.gstatic.com). Now that NestJS serves the dashboard under this CSP,
+          // allow those origins or the @import'd fonts are blocked and the UI falls back to system fonts.
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
           scriptSrc: ["'self'"],
           imgSrc: ["'self'", 'data:', 'https:'],
           connectSrc: ["'self'"],
-          fontSrc: ["'self'"],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
           objectSrc: ["'none'"],
           upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null,
         },
@@ -221,6 +224,19 @@ async function bootstrap() {
 
   console.log(`🚀 OpenWA is running on: http://localhost:${port}`);
   console.log(`📚 Swagger docs: http://localhost:${port}/api/docs`);
+
+  // Make the dashboard-serving outcome explicit so a missing build (no UI on `/`)
+  // is obvious instead of a silent 404.
+  if (!dashboardServingEnabled) {
+    console.log('🖥️  Dashboard: serving disabled (SERVE_DASHBOARD=false); API only');
+  } else if (dashboardBuildPresent) {
+    console.log(`🖥️  Dashboard: serving bundled UI at http://localhost:${port}`);
+  } else {
+    console.warn(
+      `⚠️  Dashboard: no build at ${DASHBOARD_DIST} - UI disabled (API still serves /api). ` +
+        'Run `npm run build:all` to bundle it, or use the Vite dev server (`npm run dev`).',
+    );
+  }
 }
 
 void bootstrap();

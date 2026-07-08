@@ -393,6 +393,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         });
       },
       onMessage: (message): void => {
+        // Status/Story posts arrive via the inbound path for some engines; don't persist or webhook them.
+        // Mirrors the isStatusBroadcast guard in onMessageCreate below.
+        if (message.isStatusBroadcast) {
+          return;
+        }
         this.logger.debug(`Message received from ${message.from}`, {
           sessionId: id,
           messageId: message.id,

@@ -22,8 +22,10 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Build the application
-RUN npm run build
+# Build the API (dist/) and the dashboard SPA (dashboard/dist/). The root `npm ci` above
+# ran before the dashboard source was copied, so its postinstall hook skipped the dashboard
+# deps - install them explicitly here (npm ci, reproducible from dashboard/package-lock.json).
+RUN npm run build && npm run dashboard:ci && npm run dashboard:build
 
 # ===== Stage 2: Production =====
 FROM docker.io/node:22-slim AS production
@@ -70,6 +72,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
+
+# Copy the bundled dashboard SPA; ServeStaticModule serves it from this same process/port
+# (app.module.ts resolves dashboard/dist relative to dist/). Single container, single port.
+COPY --from=builder /app/dashboard/dist ./dashboard/dist
 
 # Create data directories with correct ownership
 RUN mkdir -p ./data/sessions ./data/media && \

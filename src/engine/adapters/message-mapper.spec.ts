@@ -72,6 +72,16 @@ describe('buildIncomingMessageBase', () => {
     expect(r.chatId).toBe('group-1@g.us');
     expect(r.isGroup).toBe(true);
   });
+
+  it('maps mentionedIds when present', () => {
+    const r = buildIncomingMessageBase({ ...base, mentionedIds: ['222@lid', '333@lid'] });
+    expect(r.mentionedIds).toEqual(['222@lid', '333@lid']);
+  });
+
+  it('omits mentionedIds when absent or empty', () => {
+    expect(buildIncomingMessageBase(base).mentionedIds).toBeUndefined();
+    expect(buildIncomingMessageBase({ ...base, mentionedIds: [] }).mentionedIds).toBeUndefined();
+  });
 });
 
 describe('mapWwebjsMessageType (engine type-token -> neutral MessageType boundary, #265)', () => {

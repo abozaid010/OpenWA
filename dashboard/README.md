@@ -45,7 +45,11 @@ npm install
 npm run dev
 ```
 
-Dashboard will be available at `http://localhost:2886`
+Dashboard will be available at `http://localhost:2886` (Vite dev server with hot reload; it
+proxies `/api` + `/socket.io` to the NestJS API on `:2785`).
+
+In production the build (`npm run build` → `dist/`) is served by the NestJS API itself on the
+same port via `@nestjs/serve-static`, so there is no separate dashboard container.
 
 ### Production Build
 

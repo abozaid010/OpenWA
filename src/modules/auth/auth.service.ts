@@ -75,7 +75,8 @@ export class AuthService implements OnModuleInit {
 
     // Always show the welcome banner on startup
     const apiBaseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 2785}`;
-    const dashboardUrl = process.env.DASHBOARD_URL || `http://localhost:${process.env.DASHBOARD_PORT || 2886}`;
+    // The dashboard is served by NestJS at the same origin as the API now, so default to it.
+    const dashboardUrl = process.env.DASHBOARD_URL || apiBaseUrl;
 
     this.logger.log('');
     this.logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

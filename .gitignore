@@ -46,6 +46,7 @@ Thumbs.db
 # Data and storage
 data/
 media/
+!src/**/media/
 uploads/
 .wwebjs_auth/
 .wwebjs_cache/

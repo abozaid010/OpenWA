@@ -240,9 +240,8 @@ describe('Session Integration', () => {
         .send({ name: 'integration-test' })
         .expect(201);
 
-      expect(response.body.success).toBe(true);
-      expect(response.body.data.status).toBe('SCAN_QR');
-      expect(response.body.data.qr).toBeDefined();
+      expect(response.body.status).toBe('SCAN_QR');
+      expect(response.body.qr).toBeDefined();
     });
 
     it('should reject duplicate session name', async () => {
@@ -260,7 +259,8 @@ describe('Session Integration', () => {
         .send({ name: 'duplicate-test' })
         .expect(409);
 
-      expect(response.body.error.code).toBe('SESSION_ALREADY_EXISTS');
+      expect(response.body.statusCode).toBe(409);
+      expect(response.body.message).toMatch(/SESSION_ALREADY_EXISTS/i);
     });
   });
 
@@ -357,22 +357,22 @@ describe('Session E2E', () => {
       });
 
       expect(response.status).toBe(201);
-      expect(response.data.data.status).toBe('SCAN_QR');
-      sessionId = response.data.data.id;
+      expect(response.data.status).toBe('SCAN_QR');
+      sessionId = response.data.id;
     });
 
     it('Step 2: Get QR code', async () => {
       const response = await api.get(`/sessions/${sessionId}/qr`);
 
       expect(response.status).toBe(200);
-      expect(response.data.data.image).toMatch(/^data:image\/png;base64,/);
+      expect(response.data.image).toMatch(/^data:image\/png;base64,/);
     });
 
     it('Step 3: Check session status', async () => {
       const response = await api.get(`/sessions/${sessionId}`);
 
       expect(response.status).toBe(200);
-      expect(response.data.data.id).toBe(sessionId);
+      expect(response.data.id).toBe(sessionId);
     });
 
     it('Step 4: Delete session', async () => {
@@ -437,8 +437,8 @@ export default function () {
   sleep(1);
 
   // Test: Send message (if session exists)
-  if (sessionsRes.json().data?.length > 0) {
-    const sessionId = sessionsRes.json().data[0].id;
+  if (sessionsRes.json()?.length > 0) {
+    const sessionId = sessionsRes.json()[0].id;
     const msgRes = http.post(
       `${BASE_URL}/sessions/${sessionId}/messages/send-text`,
       JSON.stringify({
@@ -520,7 +520,8 @@ describe('Security Tests', () => {
         .get('/api/sessions')
         .expect(401);
 
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
+      expect(response.body.statusCode).toBe(401);
+      expect(response.body.message).toBeDefined();
     });
 
     it('should reject invalid API key', async () => {
@@ -529,7 +530,8 @@ describe('Security Tests', () => {
         .set('X-API-Key', 'invalid-key')
         .expect(401);
 
-      expect(response.body.error.code).toBe('UNAUTHORIZED');
+      expect(response.body.statusCode).toBe(401);
+      expect(response.body.message).toBeDefined();
     });
   });
 
@@ -541,7 +543,8 @@ describe('Security Tests', () => {
         .send({ name: "'; DROP TABLE sessions; --" })
         .expect(400);
 
-      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.statusCode).toBe(400);
+      expect(response.body.message).toBeDefined();
     });
 
     it('should reject XSS in webhook URL', async () => {
@@ -554,7 +557,8 @@ describe('Security Tests', () => {
         })
         .expect(400);
 
-      expect(response.body.error.code).toBe('WEBHOOK_URL_INVALID');
+      expect(response.body.statusCode).toBe(400);
+      expect(response.body.message).toBeDefined();
     });
   });
 
@@ -599,7 +603,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       
       - run: npm ci
@@ -630,7 +634,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       
       - run: npm ci
       - run: npm run test:integration
@@ -645,7 +649,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       
       - run: npm ci
       - run: npm run build

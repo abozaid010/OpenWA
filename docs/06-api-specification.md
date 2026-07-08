@@ -908,7 +908,7 @@ delivery-status tracking behave identically to a direct text send.
 > **Scope (issue #69):** Only **Option B** — server-side text templates with
 > variable substitution — is supported. Interactive templates (buttons, list
 > messages, WhatsApp Business HSM / approved message templates) are **Option A**
-> and are **not supported** on the whatsapp-web.js engine.
+> and are **not supported** on any of the current engines (`whatsapp-web.js` or `baileys`).
 
 ```http
 POST /api/sessions/:sessionId/messages/send-template
@@ -956,7 +956,7 @@ to a session and rendered with `{{placeholder}}` substitution by the
 an API key with at least the `operator` role.
 
 > Interactive button / list / HSM templates (**Option A**) are out of scope on
-> the whatsapp-web.js engine and are not provided.
+> all current engines and are not provided.
 
 #### Create Template
 
@@ -1843,7 +1843,7 @@ async function sendMessage(sessionId, chatId, text) {
 
 // Usage
 sendMessage('sess_abc123', '628123456789@c.us', 'Hello!')
-  .then(result => console.log('Sent:', result.data.messageId))
+  .then(result => console.log('Sent:', result.messageId))
   .catch(err => console.error('Error:', err.response?.data));
 ```
 
@@ -1885,7 +1885,7 @@ class OpenWA:
 # Usage
 client = OpenWA('http://localhost:2785/api', 'your-api-key')
 result = client.send_text('sess_abc123', '628123456789@c.us', 'Hello from Python!')
-print(f"Message ID: {result['data']['messageId']}")
+print(f"Message ID: {result['messageId']}")
 ```
 
 ### WebSocket Client Example (JavaScript)

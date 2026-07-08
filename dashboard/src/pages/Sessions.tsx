@@ -26,13 +26,15 @@ export function Sessions() {
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
-  const fetchSessions = useCallback(async () => {
+  const fetchSessions = useCallback(async (): Promise<Session[]> => {
     try {
       setLoading(true);
       const data = await sessionApi.list();
       setSessions(data);
+      return data;
     } catch (err) {
       setError(err instanceof Error ? err.message : t('sessions.create.errorDefault'));
+      return [];
     } finally {
       setLoading(false);
     }
@@ -75,6 +77,13 @@ export function Sessions() {
   const currentSessionName = useRef<string>('');
 
   const fetchQR = useCallback(async (sessionId: string) => {
+    // Guard: if session is already connected, stop polling immediately.
+    const currentSession = sessions.find(s => s.id === sessionId);
+    if (currentSession?.status === 'ready') {
+      setQrData(null);
+      currentSessionName.current = '';
+      return;
+    }
     try {
       const qr = await sessionApi.getQR(sessionId);
       setQrData({ sessionId, sessionName: currentSessionName.current, qrCode: qr.qrCode });
@@ -86,16 +95,16 @@ export function Sessions() {
     } catch {
       // Keep qrData alive so the polling interval keeps retrying until the QR
       // is ready. Only stop polling if the session itself has failed.
-      const currentSession = await sessionApi.get(sessionId).catch(() => null);
-      const stillInitializing = currentSession &&
-        ['initializing', 'connecting', 'qr_ready'].includes(currentSession.status);
+      const updated = await sessionApi.get(sessionId).catch(() => null);
+      const stillInitializing = updated &&
+        ['initializing', 'connecting', 'qr_ready'].includes(updated.status);
       if (!stillInitializing) {
         setQrData(null);
         currentSessionName.current = '';
         fetchSessions();
       }
     }
-  }, []);
+  }, [sessions]);
 
   useEffect(() => {
     if (qrData) {
@@ -159,15 +168,16 @@ export function Sessions() {
       handleShowQR(id);
     } catch (err) {
       console.error('Failed to start:', err);
-      await fetchSessions();
-      if (err instanceof Error && err.message.includes('already started')) {
-        handleShowQR(id);
-      }
+      const fresh = await fetchSessions();
+      const current = fresh.find(s => s.id === id);
+      if (current?.status !== 'ready') handleShowQR(id);
     }
   };
 
   const handleShowQR = async (id: string) => {
     const session = sessions.find(s => s.id === id);
+    // Nothing to show for an already-connected session.
+    if (session?.status === 'ready') return;
     const sessionName = session?.name || '';
     // Show loading state immediately so the modal opens and polling starts
     // even before Chromium has finished initializing.

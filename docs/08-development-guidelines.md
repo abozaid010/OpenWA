@@ -552,9 +552,8 @@ describe('Session (e2e)', () => {
         .send({ name: 'e2e-test-session' })
         .expect(201)
         .expect((res) => {
-          expect(res.body.success).toBe(true);
-          expect(res.body.data.name).toBe('e2e-test-session');
-          expect(res.body.data.status).toBe('created');
+          expect(res.body.name).toBe('e2e-test-session');
+          expect(res.body.status).toBe('created');
         });
     });
 
@@ -687,18 +686,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 
   private formatError(exception: unknown, request: Request) {
+    const status = exception instanceof HttpException
+      ? exception.getStatus()
+      : HttpStatus.INTERNAL_SERVER_ERROR;
+    // Return NestJS default error shape: { statusCode, message, error }
     return {
-      success: false,
-      error: {
-        code: this.getErrorCode(exception),
-        message: this.getErrorMessage(exception),
-        details: this.getErrorDetails(exception),
-      },
-      meta: {
-        timestamp: new Date().toISOString(),
-        requestId: request.headers['x-request-id'],
-        path: request.url,
-      },
+      statusCode: status,
+      message: this.getErrorMessage(exception),
+      error: this.getErrorCode(exception),
     };
   }
 }
@@ -712,7 +707,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
 ```bash
 # Required
-- Node.js 20 LTS
+- Node.js 22 LTS
 - npm 10+
 - Docker & Docker Compose
 - Git
@@ -814,7 +809,7 @@ API_KEY_MASTER=dev-master-key-change-in-production
 SESSION_DATA_PATH=./.wwebjs_auth
 MAX_SESSIONS=3
 
-# Engine
+# Engine (whatsapp-web.js = default, Chromium-based; baileys = browser-free WebSocket)
 ENGINE_TYPE=whatsapp-web.js
 PUPPETEER_HEADLESS=true
 
@@ -852,7 +847,7 @@ API_KEY_MASTER=your-secure-master-key
 SESSION_DATA_PATH=./.wwebjs_auth
 MAX_SESSIONS=10
 
-# Engine
+# Engine (whatsapp-web.js = default, Chromium-based; baileys = browser-free WebSocket)
 ENGINE_TYPE=whatsapp-web.js
 PUPPETEER_HEADLESS=true
 

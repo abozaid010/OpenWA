@@ -85,11 +85,10 @@ and no unqualified-search registries are defined
 
 **Cause:** Podman rootless mode does not fall back to Docker Hub for unqualified image names.
 
-**Fix:** All `FROM` directives in `Dockerfile` and `dashboard/Dockerfile` must use fully-qualified names:
+**Fix:** All `FROM` directives in the `Dockerfile` must use fully-qualified names:
 
 ```dockerfile
 FROM docker.io/node:22-slim
-FROM docker.io/nginx:alpine
 ```
 
 ---
@@ -200,6 +199,8 @@ docker compose up -d
 
 ### Issue: Session stuck at `authenticating`, never reaches `ready`
 
+> **Engine:** This issue applies to the `whatsapp-web.js` engine only. If you are using `ENGINE_TYPE=baileys`, skip this section.
+
 **Symptoms:** After scanning the QR the phone links the device, but the session stays at
 `authenticating` indefinitely and never becomes `ready`. `GET /sessions/:id/qr` returns 400 while
 stuck. Often seen on ARM64 (e.g. Raspberry Pi) after upgrading to v0.2.x.
@@ -220,6 +221,8 @@ Restart the container after setting it. Browse newer versions at
 Set `WWEBJS_WEB_VERSION=latest` (or leave it unset) to restore the default auto-version behavior.
 
 ### Issue: Session fails to launch with `chrome_crashpad_handler: --database is required`
+
+> **Engine:** This issue applies to the `whatsapp-web.js` engine only (Chromium/Puppeteer-based). It does not affect `ENGINE_TYPE=baileys`.
 
 **Symptoms:** The session never starts; the engine log shows `Failed to launch the browser process` with
 `chrome_crashpad_handler: --database is required`, and the host kernel log shows a Chromium
@@ -435,7 +438,8 @@ docker stats openwa --no-stream
 curl -H "X-API-Key: $API_KEY" \
   http://localhost:2785/api/metrics/memory
 
-# Expected: ~300-500MB per session
+# Expected: ~300-500MB per session (whatsapp-web.js / Chromium engine)
+# With ENGINE_TYPE=baileys the footprint is significantly lower (no Chromium)
 ```
 
 **Solutions:**
@@ -451,7 +455,7 @@ services:
         reservations:
           memory: 512M
     environment:
-      # Optimize Puppeteer
+      # Optimize Puppeteer (whatsapp-web.js engine only)
       - PUPPETEER_ARGS=--disable-dev-shm-usage,--disable-gpu,--no-sandbox
       # Limit cache
       - WA_CACHE_SIZE=1000
@@ -465,7 +469,7 @@ services:
 |--------------|--------|-----------|
 | Disable media cache | -30% RAM | Slower media re-send |
 | Reduce message history | -20% RAM | Less searchable history |
-| Headless Chrome flags | -15% RAM | None |
+| Headless Chrome flags | -15% RAM (wwebjs only) | None |
 | Limit concurrent sessions | Linear | Fewer sessions |
 
 ### Issue: Slow API Response
@@ -656,11 +660,12 @@ docker exec openwa curl http://host.docker.internal:8080
 > - Implement rate limiting
 
 **Q: How many sessions can I run?**
-> A: Depends on your server resources:
+> A: Depends on your server resources and the engine in use. With the default `whatsapp-web.js` engine (Chromium-based), each session uses ~300-500MB RAM:
 > - 2GB RAM: 3-5 sessions
 > - 4GB RAM: 8-10 sessions
 > - 8GB RAM: 15-20 sessions
-> Each session uses ~300-500MB RAM.
+>
+> With `ENGINE_TYPE=baileys` (browser-free), RAM per session is significantly lower — you can run more sessions on the same hardware. Exact figures depend on message volume and group membership.
 
 **Q: Can I use WhatsApp Business account?**
 > A: Yes, OpenWA works with both personal and WhatsApp Business accounts. Note that WhatsApp Business API (official Meta API) is different and not supported.
@@ -758,7 +763,10 @@ else
 fi
 
 # Backup auth sessions
+# whatsapp-web.js engine:
 cp -r ./data/.wwebjs_auth "$BACKUP_DIR/$DATE/"
+# Baileys engine (ENGINE_TYPE=baileys): back up BAILEYS_AUTH_DIR (default: ./data/baileys)
+# cp -r ./data/baileys "$BACKUP_DIR/$DATE/"
 
 # Keep only last 7 days
 find "$BACKUP_DIR" -type d -mtime +7 -exec rm -rf {} \;
@@ -804,7 +812,7 @@ available_events:
     "from": "628123456789@c.us",
     "to": "628987654321@c.us",
     "body": "Hello!",
-    "type": "chat",
+    "type": "text",
     "timestamp": 1706868600,
     "isGroup": false,
     "author": null,

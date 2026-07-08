@@ -26,10 +26,9 @@ flowchart TB
             QM[Queue<br/>Manager]
         end
         
-        subgraph Engine["WhatsApp Engine"]
-            WW[whatsapp-web.js]
-            PP[Puppeteer]
-            CH[Chrome/Chromium]
+        subgraph Engine["WhatsApp Engine (pluggable)"]
+            WW[whatsapp-web.js<br/>Puppeteer/Chromium]
+            BY[Baileys<br/>WebSocket/No browser]
         end
         
         subgraph Storage["Storage Layer"]
@@ -671,14 +670,14 @@ flowchart TB
     subgraph Container["Docker Container"]
         subgraph Node["Node.js Runtime"]
             NEST[NestJS Application]
-            WW[whatsapp-web.js]
+            WW[whatsapp-web.js<br/>or Baileys]
         end
         
-        subgraph Browser["Headless Browser"]
+        subgraph Browser["Headless Browser (wwebjs only)"]
             CHROME[Chromium]
         end
         
-        Node --> Browser
+        Node -.->|ENGINE_TYPE=whatsapp-web.js| Browser
     end
     
     subgraph External["External Services"]
@@ -748,41 +747,29 @@ flowchart LR
 
 ### API Response Structure
 
+Responses are the **raw handler payload** — there is no `{success, data, meta}` envelope.
+A controller that returns an object sends exactly that object; a list endpoint returns a bare array.
+Errors use the NestJS default shape.
+
 ```typescript
-// Success Response
+// Success Response — the resource itself
 {
-  "success": true,
-  "data": { ... },
-  "meta": {
-    "timestamp": "2025-02-02T10:00:00Z",
-    "requestId": "uuid"
-  }
+  "id": "abc",
+  "name": "my-session",
+  "status": "READY"
 }
 
-// Error Response
-{
-  "success": false,
-  "error": {
-    "code": "SESSION_NOT_FOUND",
-    "message": "Session with id 'xxx' not found",
-    "details": { ... }
-  },
-  "meta": {
-    "timestamp": "2025-02-02T10:00:00Z",
-    "requestId": "uuid"
-  }
-}
+// List Response — a bare array
+[
+  { "id": "abc", "name": "my-session", "status": "READY" },
+  { "id": "def", "name": "other-session", "status": "DISCONNECTED" }
+]
 
-// Paginated Response
+// Error Response — NestJS default shape
 {
-  "success": true,
-  "data": [ ... ],
-  "pagination": {
-    "page": 1,
-    "limit": 20,
-    "total": 100,
-    "totalPages": 5
-  }
+  "statusCode": 404,
+  "message": "Session with id 'xxx' not found",
+  "error": "Not Found"
 }
 ```
 
@@ -883,7 +870,7 @@ flowchart LR
 ## 3.12 Engine Abstraction Layer
 
 > [!IMPORTANT]
-> Engine abstraction is critical to mitigate **R001: WhatsApp Protocol Changes** in Risk Management. With an abstraction layer, we can easily switch to an alternative engine (e.g., Baileys) when needed.
+> Engine abstraction is critical to mitigate **R001: WhatsApp Protocol Changes** in Risk Management. OpenWA ships two production-ready engines selectable via `ENGINE_TYPE`: `whatsapp-web.js` (default, Chromium/Puppeteer-based) and `baileys` (browser-free, WebSocket/Noise protocol). With the abstraction layer, adding further engines requires no changes to application code.
 
 ### Strategy Pattern for Engine
 
@@ -1192,8 +1179,9 @@ ENGINE_TYPE=mock
 
 ```mermaid
 flowchart TB
-    subgraph Current["Current State"]
-        A[whatsapp-web.js\nPuppeteer-based]
+    subgraph Current["Available Engines"]
+        A[whatsapp-web.js\nPuppeteer-based\ndefault]
+        A2[Baileys\nWebSocket-based\nENGINE_TYPE=baileys]
     end
     
     subgraph Risk["Risk Detection"]

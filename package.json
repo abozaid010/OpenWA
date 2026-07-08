@@ -1,19 +1,22 @@
 {
   "name": "openwa",
-  "version": "0.2.10",
+  "version": "0.4.1",
   "description": "Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API for WhatsApp",
   "author": "Yudhi Armyndharis & OpenWA Contributors",
   "private": true,
   "license": "MIT",
   "scripts": {
     "build": "nest build",
+    "build:all": "nest build && npm run dashboard:build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
+    "prod": "npm run build:all && node dist/main",
     "dev": "concurrently -n api,dashboard -c blue,green \"npm run start:dev\" \"npm run dashboard:dev\"",
     "dashboard:install": "cd dashboard && npm install",
+    "dashboard:ci": "cd dashboard && npm ci",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build",
     "postinstall": "node -e \"if (require('fs').existsSync('dashboard')) require('child_process').spawnSync('npm', ['run', 'dashboard:install'], { stdio: 'inherit', shell: true });\"",
@@ -47,9 +50,11 @@
     "@nestjs/core": "^11.1.27",
     "@nestjs/platform-express": "^11.1.27",
     "@nestjs/platform-socket.io": "^11.1.27",
+    "@nestjs/serve-static": "^5.0.5",
     "@nestjs/swagger": "^11.4.4",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.0",
+    "@whiskeysockets/baileys": "6.7.23",
     "archiver": "^8.0.0",
     "bullmq": "^5.78.1",
     "class-transformer": "^0.5.1",
@@ -108,7 +113,20 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)s$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "CommonJS",
+            "moduleResolution": "node",
+            "resolvePackageJsonExports": false
+          }
+        }
+      ]
+    },
+    "moduleNameMapper": {
+      "^@whiskeysockets/baileys$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts",
+      "^@whiskeysockets/baileys/(.*)$": "<rootDir>/../test/__mocks__/@whiskeysockets/baileys.ts"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

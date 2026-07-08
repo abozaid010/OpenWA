@@ -64,6 +64,11 @@ export default () => ({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     },
     sessionDataPath: process.env.SESSION_DATA_PATH || './data/sessions',
+    // Baileys engine (used when ENGINE_TYPE=baileys). Multi-file auth state base dir; each session
+    // gets its own subdirectory. Read by the Baileys plugin from the opaque engine config blob.
+    baileys: {
+      authDir: process.env.BAILEYS_AUTH_DIR || './data/baileys',
+    },
   },
 
   // Webhook configuration

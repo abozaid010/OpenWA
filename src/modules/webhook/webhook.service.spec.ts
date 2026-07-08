@@ -11,7 +11,7 @@ import { Repository } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
-import { WebhookService, WebhookPayload } from './webhook.service';
+import { WebhookService, WebhookPayload, capWebhookMedia } from './webhook.service';
 import { Webhook } from './entities/webhook.entity';
 import { HookManager } from '../../core/hooks';
 import { QUEUE_NAMES } from '../queue/queue-names';
@@ -539,5 +539,54 @@ describe('WebhookService', () => {
         }),
       );
     });
+  });
+});
+
+describe('capWebhookMedia', () => {
+  const ORIGINAL = process.env.WEBHOOK_MEDIA_MAX_BYTES;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.WEBHOOK_MEDIA_MAX_BYTES;
+    else process.env.WEBHOOK_MEDIA_MAX_BYTES = ORIGINAL;
+  });
+
+  // 2 MB of base64 'A's decodes to ~1.5 MB of bytes.
+  const bigBase64 = 'A'.repeat(2 * 1024 * 1024);
+
+  it('returns the data untouched when the cap is unset', () => {
+    delete process.env.WEBHOOK_MEDIA_MAX_BYTES;
+    const data = { media: { mimetype: 'image/jpeg', data: bigBase64 } };
+    expect(capWebhookMedia(data)).toBe(data);
+  });
+
+  it('strips media bytes over the cap and keeps metadata', () => {
+    process.env.WEBHOOK_MEDIA_MAX_BYTES = '1048576'; // 1 MB
+    const data = { id: 'x', media: { mimetype: 'image/jpeg', filename: 'p.jpg', data: bigBase64 } };
+    const out = capWebhookMedia(data);
+    expect(out).not.toBe(data);
+    expect(out.mediaTruncated).toBe(true);
+    expect(out.media).toEqual({ mimetype: 'image/jpeg', filename: 'p.jpg', size: expect.any(Number) });
+    expect((out.media as { data?: string }).data).toBeUndefined();
+    // Input is never mutated (same object is emitted to WebSocket clients).
+    expect((data.media as { data?: string }).data).toBe(bigBase64);
+  });
+
+  it('keeps media at or under the cap', () => {
+    process.env.WEBHOOK_MEDIA_MAX_BYTES = String(10 * 1024 * 1024);
+    const data = { media: { mimetype: 'image/jpeg', data: bigBase64 } };
+    expect(capWebhookMedia(data)).toBe(data);
+  });
+
+  it('prefers the adapter-recorded mediaSizeBytes over decoding', () => {
+    process.env.WEBHOOK_MEDIA_MAX_BYTES = '1048576';
+    const data = { mediaSizeBytes: 9_000_000, media: { mimetype: 'video/mp4', data: 'AAAA' } };
+    const out = capWebhookMedia(data);
+    expect(out.mediaTruncated).toBe(true);
+    expect((out.media as { size?: number }).size).toBe(9_000_000);
+  });
+
+  it('leaves payloads without media alone', () => {
+    process.env.WEBHOOK_MEDIA_MAX_BYTES = '1048576';
+    const data = { id: 'x', body: 'hello' };
+    expect(capWebhookMedia(data)).toBe(data);
   });
 });

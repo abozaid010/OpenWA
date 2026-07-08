@@ -16,7 +16,7 @@ An interface implementation that provides a specific capability. In OpenWA, adap
 - **Database Adapter**: SQLite, PostgreSQL
 - **Storage Adapter**: Local, S3
 - **Cache Adapter**: Memory, Redis
-- **Engine Adapter**: whatsapp-web.js, Baileys (future)
+- **Engine Adapter**: whatsapp-web.js (default), Baileys
 
 ### API Key
 Authentication token to access the OpenWA API. Sent via the `X-API-Key` header.
@@ -27,7 +27,7 @@ WhatsApp Web session authentication data stored in the `.wwebjs_auth/` folder. I
 ## B
 
 ### Baileys
-An alternative Node.js library for WhatsApp Web that uses WebSocket directly without a browser. Lighter but easier to detect.
+Node.js library for WhatsApp Web that uses WebSocket directly without a browser (no Chromium required). Available as a selectable engine in OpenWA via `ENGINE_TYPE=baileys`.
 
 ### Broadcast
 Sending the same message to multiple recipients. On WhatsApp, this differs from the native "Broadcast List" feature.
@@ -66,7 +66,7 @@ Containerization platform for packaging and deploying applications. OpenWA is di
 ## E
 
 ### Engine
-Component that handles communication with WhatsApp Web. The primary engine used is `whatsapp-web.js`.
+Component that handles communication with WhatsApp Web. OpenWA supports pluggable engines selected via the `ENGINE_TYPE` environment variable: `whatsapp-web.js` (default, Chromium/Puppeteer-based) or `baileys` (browser-free, WebSocket-based).
 
 ### Event
 A system-emitted occurrence, for example:
@@ -140,7 +140,7 @@ Ability to run multiple WhatsApp sessions within a single OpenWA instance.
 Node.js framework for building server-side applications. The OpenWA backend is built with NestJS.
 
 ### Node.js
-JavaScript runtime used to run OpenWA. Supported version: Node.js 20 LTS.
+JavaScript runtime used to run OpenWA. Recommended version: Node.js 22 LTS.
 
 ## O
 
@@ -252,7 +252,7 @@ Protocol for real-time bidirectional communication. Used for:
 - WhatsApp Web protocol (internal)
 
 ### whatsapp-web.js
-Primary Node.js library used by OpenWA to interact with WhatsApp Web. Uses Puppeteer to control the browser.
+Default engine library used by OpenWA to interact with WhatsApp Web. Uses Puppeteer to control a headless Chromium browser. Selected via `ENGINE_TYPE=whatsapp-web.js` (or by omitting the env var).
 
 ## Z
 

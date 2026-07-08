@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="https://github.com/rmyndharis/OpenWA/actions/workflows/ci.yml"><img src="https://github.com/rmyndharis/OpenWA/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"/></a>
-  <img src="https://img.shields.io/badge/version-0.2.10-blue.svg" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-0.4.0-blue.svg" alt="Version"/>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"/>
   <img src="https://img.shields.io/badge/node-22_LTS-brightgreen.svg" alt="Node"/>
   <img src="https://img.shields.io/badge/NestJS-11.x-red.svg" alt="NestJS"/>
@@ -104,8 +104,8 @@ git clone https://github.com/rmyndharis/OpenWA.git
 cd OpenWA
 docker compose -f docker-compose.dev.yml up -d
 
-# Access
-# Dashboard: http://localhost:2886
+# Access (the dashboard is bundled into the API image and served on the same port)
+# Dashboard: http://localhost:2785
 # API: http://localhost:2785/api
 # Swagger: http://localhost:2785/api/docs
 ```
@@ -134,7 +134,7 @@ npm install
 # Start API + Dashboard (config is auto-generated on first run)
 npm run dev
 
-# Access
+# Access (in dev the dashboard runs on the Vite server with hot reload)
 # Dashboard: http://localhost:2886
 # API: http://localhost:2785/api
 # Swagger: http://localhost:2785/api/docs
@@ -187,22 +187,25 @@ docker compose up -d
 # With PostgreSQL database
 docker compose --profile postgres up -d
 
-# Full stack (PostgreSQL, Redis, Dashboard, Traefik)
+# Full stack (PostgreSQL, Redis, MinIO)
 docker compose --profile full up -d
 ```
 
-| Profile          | Services              |
-| ---------------- | --------------------- |
-| `postgres`       | PostgreSQL database   |
-| `redis`          | Redis cache           |
-| `minio`          | S3-compatible storage |
-| `with-dashboard` | Web dashboard         |
-| `with-proxy`     | Traefik reverse proxy |
-| `full`           | All services above    |
+| Profile    | Services              |
+| ---------- | --------------------- |
+| `postgres` | PostgreSQL database   |
+| `redis`    | Redis cache           |
+| `minio`    | S3-compatible storage |
+| `full`     | All services above    |
+
+> The dashboard is bundled into the API image and served by NestJS on the API port, so it
+> needs no profile — it is always available wherever `openwa-api` runs. For TLS/public exposure,
+> put your own reverse proxy (nginx, Caddy, a cloud load balancer, or a k8s Ingress) in front;
+> see the nginx example in `docs/12-troubleshooting-faq.md`.
 
 > **Development vs Production**
 >
-> - Development (`docker-compose.dev.yml`): SQLite, local storage, both API & Dashboard included
+> - Development (`docker-compose.dev.yml`): SQLite, local storage, API serves the bundled dashboard
 > - Production (`docker-compose.yml`): Configurable database, profiles for optional services
 >
 > Official GHCR images are published as multi-arch manifests for:
@@ -211,11 +214,11 @@ docker compose --profile full up -d
 
 ## 🔌 Ports
 
-| Service   | Port            | Description              |
-| --------- | --------------- | ------------------------ |
-| API       | `2785`          | REST API endpoints       |
-| Dashboard | `2886`          | Web management interface |
-| Swagger   | `2785/api/docs` | Interactive API docs     |
+| Service         | Port            | Description                                   |
+| --------------- | --------------- | --------------------------------------------- |
+| API & Dashboard | `2785`          | REST API + bundled web dashboard (same port)  |
+| Swagger         | `2785/api/docs` | Interactive API docs                          |
+| Dashboard (dev) | `2886`          | Vite dev server with hot reload (`npm run dev`) |
 
 ---
 
@@ -276,7 +279,7 @@ curl -X POST http://localhost:2785/api/sessions/{sessionId}/webhooks \
 | **Runtime**   | Node.js 22 LTS          |
 | **Framework** | NestJS 11.x             |
 | **Language**  | TypeScript 5.x          |
-| **WA Engine** | whatsapp-web.js         |
+| **WA Engine** | whatsapp-web.js (default) / baileys — set `ENGINE_TYPE` |
 | **Database**  | SQLite / PostgreSQL     |
 | **Cache**     | Redis (optional)        |
 | **Storage**   | Local / S3 / MinIO      |
